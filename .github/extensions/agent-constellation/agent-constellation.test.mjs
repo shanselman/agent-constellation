@@ -25,6 +25,12 @@ import {
 } from "./layout.mjs";
 import { renderConstellationHtml } from "./renderer.mjs";
 import {
+    activityAgeBucket,
+    boundTransitionHistory,
+    detectNodeTransitions,
+    motionAffordances,
+} from "./temporal.mjs";
+import {
     closeConstellationServer,
     getOrCreateConstellationServer,
 } from "./server.mjs";
@@ -119,6 +125,108 @@ function fixtureState() {
         { appDatabase: true, sessionStore: true, eventMetadata: true }
     );
 }
+
+test("activity age buckets use exact stable boundaries", () => {
+    const now = Date.parse("2026-09-25T17:00:00.000Z");
+    assert.deepEqual(activityAgeBucket("not-a-date", now), {
+        key: "unknown",
+        shortLabel: "",
+        ariaLabel: "activity age unknown",
+    });
+    assert.equal(activityAgeBucket(new Date(now - 59_999).toISOString(), now).key, "now");
+    assert.equal(activityAgeBucket(new Date(now - 60_000).toISOString(), now).key, "recent");
+    assert.equal(activityAgeBucket(new Date(now - 299_999).toISOString(), now).key, "recent");
+    assert.equal(activityAgeBucket(new Date(now - 300_000).toISOString(), now).key, "warm");
+    assert.equal(activityAgeBucket(new Date(now - 1_799_999).toISOString(), now).key, "warm");
+    assert.equal(activityAgeBucket(new Date(now - 1_800_000).toISOString(), now).key, "quiet");
+    assert.equal(activityAgeBucket(new Date(now + 60_000).toISOString(), now).key, "now");
+});
+
+test("transition detection reports one privacy-safe operational change per node", () => {
+    const changedAt = "2026-09-25T17:00:00.000Z";
+    const previous = [
+        { id: "alpha", name: "Alpha", status: "idle", updatedAt: "2026-09-25T16:00:00.000Z" },
+        {
+            id: "beta",
+            name: "Beta",
+            status: "busy",
+            updatedAt: "2026-09-25T16:01:00.000Z",
+            task: "private original task",
+        },
+        { id: "gamma", name: "Gamma", status: "completed" },
+    ];
+    const next = [
+        { id: "alpha", name: "Alpha", status: "busy", updatedAt: "2026-09-25T16:00:00.000Z" },
+        {
+            id: "beta",
+            name: "Beta",
+            status: "busy",
+            updatedAt: "2026-09-25T16:02:00.000Z",
+            task: "private updated task",
+        },
+        { id: "delta", name: "Delta", status: "waiting-user" },
+    ];
+
+    const transitions = detectNodeTransitions(previous, next, changedAt);
+    assert.deepEqual(transitions, [
+        {
+            nodeId: "alpha",
+            nodeName: "Alpha",
+            kind: "status",
+            fromStatus: "idle",
+            toStatus: "busy",
+            changedAt,
+        },
+        {
+            nodeId: "beta",
+            nodeName: "Beta",
+            kind: "updated",
+            fromStatus: "busy",
+            toStatus: "busy",
+            changedAt,
+        },
+        {
+            nodeId: "delta",
+            nodeName: "Delta",
+            kind: "added",
+            fromStatus: undefined,
+            toStatus: "waiting-user",
+            changedAt,
+        },
+        {
+            nodeId: "gamma",
+            nodeName: "Gamma",
+            kind: "removed",
+            fromStatus: "completed",
+            toStatus: undefined,
+            changedAt,
+        },
+    ]);
+    assert.equal(JSON.stringify(transitions).includes("private"), false);
+});
+
+test("transition history is newest-first and strictly bounded", () => {
+    const history = [{ nodeId: "older" }, { nodeId: "oldest" }];
+    const transitions = [{ nodeId: "newest" }, { nodeId: "newer" }];
+    assert.deepEqual(
+        boundTransitionHistory(history, transitions, 3).map((item) => item.nodeId),
+        ["newest", "newer", "older"]
+    );
+    assert.deepEqual(boundTransitionHistory(history, transitions, 0), []);
+});
+
+test("reduced motion keeps static change emphasis and disables smooth scrolling", () => {
+    assert.deepEqual(motionAffordances(true), {
+        scrollBehavior: "auto",
+        recentChangeClass: "recent-change recent-change-static",
+        recentChangeDurationMs: 6_000,
+    });
+    assert.deepEqual(motionAffordances(false), {
+        scrollBehavior: "smooth",
+        recentChangeClass: "recent-change recent-change-animated",
+        recentChangeDurationMs: 3_000,
+    });
+});
 
 test("normalization sanitizes metadata and layout is deterministic", () => {
     const first = fixtureState();
@@ -708,6 +816,10 @@ test("loopback server rejects unsafe requests and cleans up idempotently", async
         assert.equal(layoutModule.status, 200);
         assert.match(await layoutModule.text(), /layoutResponsiveConstellation/);
 
+        const temporalModule = await fetch(`${first.url}temporal.mjs`, { headers: { cookie } });
+        assert.equal(temporalModule.status, 200);
+        assert.match(await temporalModule.text(), /activityAgeBucket/);
+
         const stateResponse = await fetch(`${first.url}state`, { headers: { cookie } });
         assert.equal(stateResponse.status, 200);
         const normalState = await stateResponse.json();
@@ -787,6 +899,14 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     });
     assert.match(html, /aria-live="polite"/);
     assert.match(html, /prefers-reduced-motion/);
+    assert.match(html, /activityAgeBucket/);
+    assert.match(html, /detectNodeTransitions/);
+    assert.match(html, /boundTransitionHistory\(state\.history, transitions, 8\)/);
+    assert.match(html, /motionAffordances\(reducedMotion\.matches\)\.scrollBehavior/);
+    assert.match(html, /recent-change-static/);
+    assert.match(html, /recent-change-animated/);
+    assert.match(html, /Recent transitions/);
+    assert.match(html, /this canvas only/);
     assert.match(html, /role="tree"/);
     assert.match(html, /Mission status counts/);
     assert.match(html, /CURRENT/);

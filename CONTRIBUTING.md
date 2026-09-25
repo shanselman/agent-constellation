@@ -8,6 +8,7 @@ Thanks for helping improve Agent Constellation.
 - Keep changes focused and include tests for behavior changes.
 - Preserve zero runtime dependencies.
 - Preserve read-only data access, metadata sanitization, loopback-only hosting, per-canvas tokens, same-site request checks, and the restrictive Content Security Policy.
+- Keep temporal history bounded, in-memory per open canvas, and limited to sanitized operational metadata.
 - Do not add telemetry or external network requests.
 
 ## Set up

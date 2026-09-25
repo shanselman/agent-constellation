@@ -62,6 +62,12 @@ For demonstrations, the canvas accepts an isolated `demoLocalModel: true` open i
 
 Each open canvas gets its own dependency-free HTTP server bound to an ephemeral `127.0.0.1` port. Server-Sent Events push state changes to the canvas, with lightweight polling as a fallback. Manual refresh and the agent-callable `refresh` action are also available.
 
+### Temporal activity
+
+Cards show a restrained activity-age bucket (`now`, `<5m`, `<30m`, or `30m+`) alongside the existing busy elapsed time. When an SSE update changes a session, the card gets a short, one-time emphasis and the inspector records a bounded list of the eight most recent operational transitions.
+
+Temporal history exists only in memory for that open canvas. It is discarded when the canvas closes, records only sanitized session identity/status metadata, and never stores prompts, messages, secrets, tool arguments, or file contents. Reduced-motion mode replaces the one-time animated emphasis with a longer-lived static marker and disables smooth programmatic scrolling; no new continuous animation is introduced.
+
 ## Privacy and local security
 
 Agent Constellation is deliberately local-first:
@@ -69,6 +75,7 @@ Agent Constellation is deliberately local-first:
 - Reads Copilot's local SQLite databases in **read-only** mode.
 - Reads only a bounded tail of local session event metadata.
 - Returns sanitized identifiers and operational metadata—not prompts, chat messages, secrets, tool arguments, or repository file contents.
+- Keeps at most eight recent transitions in the open page's memory only; nothing is written to disk or transmitted externally.
 - Binds its renderer server to `127.0.0.1` only.
 - Requires an unguessable per-canvas bootstrap token, then stores it in an `HttpOnly`, `SameSite=Strict` cookie.
 - Rejects non-loopback hosts, cross-site requests, oversized request bodies, and unexpected refresh payloads.
@@ -155,9 +162,10 @@ The installable extension lives entirely in [`.github/extensions/agent-constella
 | `extension.mjs` | Declares the canvas, open schema, actions, and lifecycle with the Copilot SDK. |
 | `data.mjs` | Reads local sources, derives statuses and relationships, sanitizes metadata, filters state, and isolates demo decoration. |
 | `layout.mjs` | Produces deterministic horizontal/vertical layouts, completed-shelf behavior, model labels, fit scaling, and pinch transforms. |
+| `temporal.mjs` | Provides pure activity-age, transition detection, bounded-history, and motion-affordance helpers. |
 | `renderer.mjs` | Generates the accessible, responsive, theme-aware canvas UI. |
 | `server.mjs` | Hosts the token-protected loopback page, JSON state, refresh endpoint, and SSE stream. |
-| `agent-constellation.test.mjs` | Covers collection, sanitization, relationships, responsive layout, gestures, local-model semantics, renderer accessibility, and loopback protections. |
+| `agent-constellation.test.mjs` | Covers collection, sanitization, relationships, temporal helpers, responsive layout, gestures, local-model semantics, renderer accessibility, and loopback protections. |
 | `copilot-extension.json` | Identifies the folder as a shareable/installable Copilot extension. |
 
 ### Local data sources

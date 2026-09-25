@@ -210,8 +210,35 @@ export function renderConstellationHtml(config) {
       50% { filter: drop-shadow(0 0 10px color-mix(in srgb, var(--waiting) 55%, transparent)); }
     }
     .node-name { fill: var(--text); font-weight: var(--font-weight-semibold, 600); font-size: 12px; }
-    .node-repo, .node-model, .node-status { fill: var(--muted); font-size: 10px; }
+    .node-repo, .node-model, .node-status, .node-age { fill: var(--muted); font-size: 10px; }
     .node-model { font-size: 9px; }
+    .node-age { font-size: 8px; letter-spacing: .2px; }
+    .node.age-now .node-age { fill: var(--complete); }
+    .node.age-recent .node-age { fill: color-mix(in srgb, var(--complete) 62%, var(--muted)); }
+    .node.age-quiet .node-age, .node.age-unknown .node-age { opacity: .72; }
+    .recent-change-marker {
+      fill: var(--focus);
+      stroke: var(--canvas-bg);
+      stroke-width: 1.5;
+      vector-effect: non-scaling-stroke;
+    }
+    .node.recent-change-static .node-card {
+      stroke-width: 3;
+      filter: drop-shadow(0 0 7px color-mix(in srgb, var(--focus) 40%, transparent));
+    }
+    .node.recent-change-animated .node-card {
+      animation: recent-change 1.2s ease-out 1;
+    }
+    @keyframes recent-change {
+      0% {
+        stroke-width: 4;
+        filter: drop-shadow(0 0 12px color-mix(in srgb, var(--focus) 70%, transparent));
+      }
+      100% {
+        stroke-width: 2;
+        filter: drop-shadow(0 3px 8px rgb(0 0 0 / .18));
+      }
+    }
     .local-model-leaf { color: var(--local-model); overflow: visible; }
     .local-model-leaf .leaf-body { fill: currentColor; }
     .local-model-leaf .leaf-vein {
@@ -282,6 +309,24 @@ export function renderConstellationHtml(config) {
     }
     code { font-family: var(--font-mono, Consolas, monospace); font-size: var(--text-code-inline, 12px); }
     .source-note { margin-top: 8px; color: var(--muted); font-size: 11px; }
+    .history {
+      margin-top: 8px;
+      padding-top: 7px;
+      border-top: 1px solid var(--border);
+    }
+    .history h3 {
+      margin: 0 0 4px;
+      font-size: 12px;
+      font-weight: var(--font-weight-semibold, 600);
+    }
+    .history h3 span {
+      color: var(--muted);
+      font-weight: var(--font-weight-normal, 400);
+    }
+    .history ol { margin: 0; padding-left: 22px; }
+    .history li { margin: 2px 0; font-size: 11px; }
+    .history time { color: var(--muted); }
+    .history-empty { margin: 0; color: var(--muted); font-size: 11px; }
     .sr-only {
       position: absolute;
       width: 1px;
@@ -322,6 +367,7 @@ export function renderConstellationHtml(config) {
         transition-duration: .001ms !important;
       }
       .edge.working { stroke-dasharray: none; }
+      .node.recent-change-animated .node-card { animation: none; }
     }
   </style>
 </head>
@@ -375,6 +421,11 @@ export function renderConstellationHtml(config) {
         </div>
         <dl id="details"></dl>
         <div class="source-note" id="sourceNote">Sanitized metadata only.</div>
+        <section class="history" aria-label="Recent local transitions">
+          <h3>Recent transitions <span>this canvas only</span></h3>
+          <ol id="historyList"></ol>
+          <p class="history-empty" id="historyEmpty">No transitions observed since this canvas opened.</p>
+        </section>
       </section>
     </main>
   </div>
@@ -386,6 +437,12 @@ export function renderConstellationHtml(config) {
       formatModelLabel,
       layoutResponsiveConstellation
     } from "./layout.mjs";
+    import {
+      activityAgeBucket,
+      boundTransitionHistory,
+      detectNodeTransitions,
+      motionAffordances
+    } from "./temporal.mjs";
 
     const config = ${serializedConfig};
     const svgNs = "http://www.w3.org/2000/svg";
@@ -413,14 +470,18 @@ export function renderConstellationHtml(config) {
       transform: { x: 0, y: 0, k: 1 },
       pointers: new Map(),
       gesture: null,
+      history: [],
+      recentChanges: new Map(),
+      recentChangeTimer: null,
       firstRender: true
     };
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     const elements = Object.fromEntries([
       "summary", "refresh", "home", "fitWidth", "zoomOut", "zoomIn",
       "filtersToggle", "filters", "statusFilter", "repoFilter", "legend",
       "stage", "constellation", "viewport", "edges", "nodes", "empty",
       "inspector", "inspectorClose", "detailName", "detailStatus", "details",
-      "sourceNote", "live"
+      "sourceNote", "historyList", "historyEmpty", "live"
     ].map((id) => [id, document.getElementById(id)]));
 
     function svgElement(name, attributes) {
@@ -470,6 +531,69 @@ export function renderConstellationHtml(config) {
       return node.status === "busy" && node.busySince
         ? base + " · " + elapsed(node.busySince)
         : base;
+    }
+
+    function agePresentation(node) {
+      return activityAgeBucket(node.updatedAt);
+    }
+
+    function applyAgePresentation(group, label, node) {
+      const age = agePresentation(node);
+      ["now", "recent", "warm", "quiet", "unknown"].forEach((key) => {
+        group.classList.toggle("age-" + key, age.key === key);
+      });
+      label.textContent = age.shortLabel;
+      label.setAttribute("aria-label", age.ariaLabel);
+    }
+
+    function transitionText(item) {
+      const before = statusLabels[item.fromStatus] || item.fromStatus;
+      const after = statusLabels[item.toStatus] || item.toStatus;
+      if (item.kind === "added") return item.nodeName + " joined the constellation";
+      if (item.kind === "removed") return item.nodeName + " left the visible constellation";
+      if (item.kind === "status") return item.nodeName + ": " + before + " → " + after;
+      return item.nodeName + " activity updated";
+    }
+
+    function renderHistory() {
+      elements.historyList.replaceChildren();
+      elements.historyEmpty.hidden = state.history.length > 0;
+      state.history.forEach((item) => {
+        const row = document.createElement("li");
+        const text = document.createElement("span");
+        text.textContent = transitionText(item) + " · ";
+        const time = document.createElement("time");
+        time.dateTime = item.changedAt;
+        time.textContent = elapsed(item.changedAt) || "now";
+        row.append(text, time);
+        elements.historyList.appendChild(row);
+      });
+    }
+
+    function recentChangeClass(nodeId) {
+      const expiresAt = state.recentChanges.get(nodeId);
+      if (!expiresAt || expiresAt <= Date.now()) return "";
+      return " " + motionAffordances(reducedMotion.matches).recentChangeClass;
+    }
+
+    function isRecentChange(nodeId) {
+      return Boolean(recentChangeClass(nodeId));
+    }
+
+    function scheduleRecentChangeClear() {
+      if (state.recentChangeTimer) window.clearTimeout(state.recentChangeTimer);
+      const expirations = [...state.recentChanges.values()];
+      if (!expirations.length) return;
+      const delay = Math.max(0, Math.min(...expirations) - Date.now()) + 20;
+      state.recentChangeTimer = window.setTimeout(() => {
+        const now = Date.now();
+        for (const [nodeId, expiresAt] of state.recentChanges) {
+          if (expiresAt <= now) state.recentChanges.delete(nodeId);
+        }
+        state.recentChangeTimer = null;
+        render();
+        scheduleRecentChangeClear();
+      }, delay);
     }
 
     function filteredState() {
@@ -602,6 +726,7 @@ export function renderConstellationHtml(config) {
       appendDetail("Busy elapsed", node.status === "busy" ? elapsed(node.busySince) : "");
       appendDetail("Last activity", node.updatedAt ? new Date(node.updatedAt).toLocaleString() : "");
       appendDetail("Session ID", node.id, true);
+      renderHistory();
       updateSelection();
       if (announce) elements.live.textContent = "Opened details for " + node.name + ", " + statusText(node);
     }
@@ -636,6 +761,8 @@ export function renderConstellationHtml(config) {
         parts.push(node.demoLocalModel ? "Demo local model" : "Local model");
       }
       if (node.humanGate) parts.push(node.humanGate.label);
+      parts.push(agePresentation(node).ariaLabel);
+      if (isRecentChange(node.id)) parts.push("recently updated");
       return parts.join(", ");
     }
 
@@ -732,7 +859,8 @@ export function renderConstellationHtml(config) {
           class: "node " + node.status + " status-" + node.status +
             (node.isRoot ? " root" : "") +
             (node.isCurrent ? " current" : "") +
-            (node.isShelf ? " shelf" : ""),
+            (node.isShelf ? " shelf" : "") +
+            recentChangeClass(node.id),
           transform: "translate(" + node.x + " " + node.y + ")",
           tabindex: "0",
           role: "treeitem",
@@ -755,6 +883,15 @@ export function renderConstellationHtml(config) {
           height,
           rx: 11
         });
+        const age = node.isShelf
+          ? null
+          : svgElement("text", {
+              class: "node-age",
+              x: -width / 2 + 10,
+              y: -height / 2 + 14,
+              "text-anchor": "start"
+            });
+        if (age) applyAgePresentation(group, age, node);
         const name = svgElement("text", {
           class: "node-name",
           x: 0,
@@ -780,7 +917,18 @@ export function renderConstellationHtml(config) {
         status.textContent = node.isShelf
           ? (state.completedExpanded ? "Collapse shelf" : "Expand shelf")
           : statusText(node);
-        group.append(halo, card, name, repo);
+        group.append(halo, card);
+        if (age) group.appendChild(age);
+        group.append(name, repo);
+        if (isRecentChange(node.id)) {
+          group.appendChild(svgElement("circle", {
+            class: "recent-change-marker",
+            cx: -width / 2 + 5,
+            cy: -height / 2 + 5,
+            r: 4,
+            "aria-hidden": "true"
+          }));
+        }
         if (hasModelLabel) {
           const displayedModelLabel = modelLabel.length > 34
             ? modelLabel.slice(0, 33) + "…"
@@ -883,6 +1031,7 @@ export function renderConstellationHtml(config) {
       renderNodes();
       renderLegend();
       updateSummary();
+      renderHistory();
       elements.empty.style.display = state.layout.nodes.length ? "none" : "grid";
       applyTransform();
       if (state.firstRender) {
@@ -912,7 +1061,7 @@ export function renderConstellationHtml(config) {
           0,
           target.y * state.transform.k + state.transform.y - size.height / 3
         ),
-        behavior: smooth ? "smooth" : "auto"
+        behavior: smooth ? motionAffordances(reducedMotion.matches).scrollBehavior : "auto"
       });
       state.selectedId = target.id;
       updateSelection();
@@ -927,8 +1076,21 @@ export function renderConstellationHtml(config) {
       homeCurrent({ resetZoom: false });
     }
 
-    function acceptState(next, announce) {
+    function acceptState(next, { announce = false, source = "refresh" } = {}) {
       if (!next || !Array.isArray(next.nodes) || !Array.isArray(next.edges)) return;
+      if (source === "sse" && state.data) {
+        const changedAt = new Date().toISOString();
+        const transitions = detectNodeTransitions(state.data.nodes, next.nodes, changedAt);
+        if (transitions.length) {
+          state.history = boundTransitionHistory(state.history, transitions, 8);
+          const affordance = motionAffordances(reducedMotion.matches);
+          const expiresAt = Date.now() + affordance.recentChangeDurationMs;
+          transitions.forEach((item) => {
+            if (item.kind !== "removed") state.recentChanges.set(item.nodeId, expiresAt);
+          });
+          scheduleRecentChangeClear();
+        }
+      }
       state.data = next;
       renderRepositories();
       render();
@@ -957,7 +1119,7 @@ export function renderConstellationHtml(config) {
               body: "{}"
             })
           : await fetchState(config.stateUrl);
-        acceptState(next, manual);
+        acceptState(next, { announce: manual });
       } catch {
         elements.live.textContent = "Constellation refresh failed. Existing state remains visible.";
       } finally {
@@ -1099,11 +1261,12 @@ export function renderConstellationHtml(config) {
       if (previousOrientation !== state.layout.orientation) homeCurrent({ smooth: false });
     });
     resizeObserver.observe(elements.stage);
+    reducedMotion.addEventListener("change", render);
 
     refresh(false);
     const events = new EventSource(config.eventsUrl);
     events.addEventListener("state", (event) => {
-      try { acceptState(JSON.parse(event.data), true); } catch {}
+      try { acceptState(JSON.parse(event.data), { announce: true, source: "sse" }); } catch {}
     });
     events.onerror = () => {
       window.setTimeout(() => refresh(false), 3000);
@@ -1113,10 +1276,13 @@ export function renderConstellationHtml(config) {
         const node = state.layout?.nodes.find((item) => item.id === group.dataset.id);
         const label = group.querySelector(".node-status");
         if (node && label && !node.isShelf) label.textContent = statusText(node);
+        const age = group.querySelector(".node-age");
+        if (node && age) applyAgePresentation(group, age, node);
       });
       if (elements.inspector.classList.contains("open")) {
         const selected = state.data?.nodes.find((node) => node.id === state.selectedId);
         if (selected) elements.detailStatus.lastElementChild.textContent = statusText(selected);
+        renderHistory();
       }
     }, 1000);
     window.setInterval(() => refresh(false), 30000);
