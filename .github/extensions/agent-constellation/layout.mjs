@@ -1,4 +1,5 @@
 const completedShelfId = "__agent_constellation_completed__";
+const archivedShelfId = "__agent_constellation_archived__";
 const filteredProjectRootId = "__agent_constellation_project_scope__";
 
 const acronymLabels = new Map([
@@ -40,6 +41,54 @@ const statusPriority = new Map(
 
 function clamp(value, minimum, maximum) {
     return Math.max(minimum, Math.min(maximum, value));
+}
+
+export function cardMarkerLayout(cardWidth, cardHeight) {
+    const width = Math.max(120, Number(cardWidth) || 0);
+    const height = Math.max(56, Number(cardHeight) || 0);
+    const halfWidth = width / 2;
+    const halfHeight = height / 2;
+    const inset = 15;
+    return {
+        status: { x: -halfWidth + inset, y: -halfHeight + inset },
+        identity: { right: halfWidth - 4, y: -halfHeight - 7 },
+        activity: { x: halfWidth - inset, y: halfHeight - inset },
+        trust: { x: -halfWidth + inset, y: halfHeight - inset },
+    };
+}
+
+export function describeMeaningfulConstellationChange(previous, next) {
+    if (!previous || !next) return "";
+    const previousNodes = new Map(
+        (previous.nodes ?? [])
+            .filter((node) => !node.synthetic)
+            .map((node) => [node.id, node])
+    );
+    const nextNodes = new Map(
+        (next.nodes ?? [])
+            .filter((node) => !node.synthetic)
+            .map((node) => [node.id, node])
+    );
+    const added = [...nextNodes.keys()].filter((id) => !previousNodes.has(id)).length;
+    const removed = [...previousNodes.keys()].filter((id) => !nextNodes.has(id)).length;
+    const statusChanges = [...nextNodes].filter(
+        ([id, node]) =>
+            previousNodes.has(id) && previousNodes.get(id).status !== node.status
+    ).length;
+    const previousScope = previous.diagnostics?.effectiveScope;
+    const nextScope = next.diagnostics?.effectiveScope;
+    const parts = [];
+    if (previousScope && nextScope && previousScope !== nextScope) {
+        parts.push(nextScope === "all" ? "All sessions view active" : "Tree view active");
+    }
+    if (added) parts.push(`${added} session${added === 1 ? "" : "s"} added`);
+    if (removed) parts.push(`${removed} session${removed === 1 ? "" : "s"} removed`);
+    if (statusChanges) {
+        parts.push(
+            `${statusChanges} session${statusChanges === 1 ? "" : "s"} changed status`
+        );
+    }
+    return parts.length ? `${parts.join(". ")}.` : "";
 }
 
 function normalizedFilterValue(value) {
@@ -384,33 +433,67 @@ function ancestry(nodeId, byId) {
     return ids;
 }
 
-function visibleTree(nodes, rootId, currentSessionId, completedExpanded) {
+function visibleTree(
+    nodes,
+    rootId,
+    currentSessionId,
+    completedExpanded,
+    archivedExpanded
+) {
     const byId = new Map(nodes.map((node) => [node.id, { ...node }]));
     const required = new Set([rootId, currentSessionId]);
     for (const node of byId.values()) {
-        if (node.status !== "completed" || node.id === rootId || node.id === currentSessionId) {
+        if (
+            !["completed", "archived"].includes(node.status) ||
+            node.id === rootId ||
+            node.id === currentSessionId
+        ) {
             for (const id of ancestry(node.id, byId)) required.add(id);
         }
     }
 
-    const collapsible = [...byId.values()].filter(
+    const completed = [...byId.values()].filter(
         (node) => !node.synthetic && node.status === "completed" && !required.has(node.id)
     );
-    const collapsed = completedExpanded ? [] : collapsible;
+    const archived = [...byId.values()].filter(
+        (node) => !node.synthetic && node.status === "archived" && !required.has(node.id)
+    );
+    const collapsed = [
+        ...(completedExpanded ? [] : completed),
+        ...(archivedExpanded ? [] : archived),
+    ];
     const collapsedIds = new Set(collapsed.map((node) => node.id));
     const visible = [...byId.values()].filter((node) => !collapsedIds.has(node.id));
-    if (collapsible.length) {
+    if (archived.length) {
+        visible.push({
+            id: archivedShelfId,
+            parentId: rootId,
+            name: `Archived (${archived.length})`,
+            repository: "Archived agent shelf",
+            status: "archived",
+            isShelf: true,
+            shelfType: "archived",
+            shelfCount: archived.length,
+        });
+    }
+    if (completed.length) {
         visible.push({
             id: completedShelfId,
             parentId: rootId,
-            name: `Completed (${collapsible.length})`,
+            name: `Completed (${completed.length})`,
             repository: "Completed agent shelf",
             status: "completed",
             isShelf: true,
-            completedCount: collapsible.length,
+            shelfType: "completed",
+            shelfCount: completed.length,
         });
     }
-    return { visible, collapsed, completedCount: collapsible.length };
+    return {
+        visible,
+        collapsed,
+        completedCount: completed.length,
+        archivedCount: archived.length,
+    };
 }
 
 function childMap(nodes) {
@@ -427,16 +510,16 @@ function childMap(nodes) {
 }
 
 function verticalLayout(nodes, rootId, currentSessionId, stageWidth, stageHeight) {
-    const cardWidth = stageWidth < 500 ? 172 : 200;
-    const cardHeight = 72;
     const margin = 10;
-    const columnGap = stageWidth < 500 ? 34 : 54;
-    const rowGap = 18;
-    const columnStep = cardWidth + columnGap;
+    const cardWidth = Math.max(
+        172,
+        Math.min(stageWidth - margin * 2, stageWidth < 480 ? 220 : 236)
+    );
+    const cardHeight = 76;
+    const rowGap = 16;
     const rowStep = cardHeight + rowGap;
     const { byId, children } = childMap(nodes);
-    const positioned = [];
-    let row = 0;
+    const ordered = [];
     let maxDepth = 0;
     const visited = new Set();
 
@@ -444,25 +527,24 @@ function verticalLayout(nodes, rootId, currentSessionId, stageWidth, stageHeight
         if (!node || visited.has(node.id)) return;
         visited.add(node.id);
         maxDepth = Math.max(maxDepth, depth);
-        const y = margin + cardHeight / 2 + row * rowStep;
-        positioned.push({
-            ...node,
-            depth,
-            x: margin + cardWidth / 2 + depth * columnStep,
-            y,
-            isRoot: node.id === rootId,
-            isCurrent: node.id === currentSessionId,
-        });
-        if (node.id !== rootId) row++;
+        ordered.push({ node, depth });
         for (const child of children.get(node.id) ?? []) visit(child, depth + 1);
     }
 
     visit(byId.get(rootId), 0);
     for (const node of [...byId.values()].sort(compareNodes)) visit(node, 0);
-    const width = Math.max(
-        stageWidth,
-        margin * 2 + cardWidth + maxDepth * columnStep
-    );
+    const indentBudget = Math.max(0, stageWidth - margin * 2 - cardWidth);
+    const indentStep = maxDepth
+        ? Math.min(24, indentBudget / maxDepth)
+        : 0;
+    const positioned = ordered.map(({ node, depth }, row) => ({
+        ...node,
+        depth,
+        x: margin + cardWidth / 2 + depth * indentStep,
+        y: margin + cardHeight / 2 + row * rowStep,
+        isRoot: node.id === rootId,
+        isCurrent: node.id === currentSessionId,
+    }));
     const height = Math.max(
         stageHeight,
         margin * 2 + cardHeight + Math.max(0, positioned.length - 1) * rowStep
@@ -470,7 +552,7 @@ function verticalLayout(nodes, rootId, currentSessionId, stageWidth, stageHeight
     return {
         orientation: "vertical",
         nodes: positioned,
-        width,
+        width: stageWidth,
         height,
         cardWidth,
         cardHeight,
@@ -534,12 +616,17 @@ function horizontalLayout(nodes, rootId, currentSessionId, stageWidth, stageHeig
     };
 }
 
-export function orientationForSize(width, height) {
+export function orientationForSize(
+    width,
+    height,
+    { nodeCount = 0, leafCount = 0 } = {}
+) {
     const safeWidth = Math.max(1, Number(width) || 1);
     const safeHeight = Math.max(1, Number(height) || 1);
-    return safeWidth < 780 || safeHeight / safeWidth > 1.18
-        ? "vertical"
-        : "horizontal";
+    const landscapePane = safeWidth >= 900 && safeWidth / safeHeight >= 1.35;
+    const boundedTree =
+        (!nodeCount || nodeCount <= 10) && (!leafCount || leafCount <= 4);
+    return landscapePane && boundedTree ? "horizontal" : "vertical";
 }
 
 export function layoutResponsiveConstellation(
@@ -548,17 +635,26 @@ export function layoutResponsiveConstellation(
         width = 960,
         height = 600,
         completedExpanded = false,
+        archivedExpanded = false,
     } = {}
 ) {
-    const stageWidth = Math.max(320, Number(width) || 960);
+    const stageWidth = Math.max(280, Number(width) || 960);
     const stageHeight = Math.max(320, Number(height) || 600);
-    const { visible, completedCount } = visibleTree(
+    const { visible, completedCount, archivedCount } = visibleTree(
         state.nodes ?? [],
         state.rootId,
         state.currentSessionId,
-        completedExpanded
+        completedExpanded,
+        archivedExpanded
     );
-    const orientation = orientationForSize(stageWidth, stageHeight);
+    const { children } = childMap(visible);
+    const leafCount = visible.filter(
+        (node) => !(children.get(node.id)?.length)
+    ).length;
+    const orientation = orientationForSize(stageWidth, stageHeight, {
+        nodeCount: visible.length,
+        leafCount,
+    });
     const layout =
         orientation === "vertical"
             ? verticalLayout(
@@ -579,20 +675,27 @@ export function layoutResponsiveConstellation(
     const edges = (state.edges ?? [])
         .filter((edge) => ids.has(edge.source) && ids.has(edge.target))
         .map((edge) => ({ ...edge }));
-    if (completedCount && ids.has(completedShelfId) && ids.has(state.rootId)) {
-        edges.push({
-            source: state.rootId,
-            target: completedShelfId,
-            kind: "shelf",
-            synthetic: true,
-            isShelf: true,
-        });
+    for (const shelf of [
+        { id: archivedShelfId, count: archivedCount },
+        { id: completedShelfId, count: completedCount },
+    ]) {
+        if (shelf.count && ids.has(shelf.id) && ids.has(state.rootId)) {
+            edges.push({
+                source: state.rootId,
+                target: shelf.id,
+                kind: "shelf",
+                synthetic: true,
+                isShelf: true,
+            });
+        }
     }
     return {
         ...layout,
         edges,
         completedCount,
+        archivedCount,
         completedExpanded,
+        archivedExpanded,
     };
 }
 
@@ -639,4 +742,4 @@ export function applyPinchGesture({
     };
 }
 
-export { completedShelfId, filteredProjectRootId };
+export { archivedShelfId, completedShelfId, filteredProjectRootId };

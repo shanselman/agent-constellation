@@ -19,7 +19,10 @@ import {
 } from "./data.mjs";
 import {
     applyPinchGesture,
+    archivedShelfId,
+    cardMarkerLayout,
     completedShelfId,
+    describeMeaningfulConstellationChange,
     filterConstellationView,
     filteredProjectRootId,
     fitWidthScale,
@@ -841,7 +844,7 @@ test("cross-project project scopes remain rooted across refresh and reopen", asy
     }
 });
 
-test("responsive layout uses vertical mission-control columns and collapses completed agents", () => {
+test("responsive layout is right-pane-first across required breakpoints", () => {
     const source = normalizeConstellation(
         [
             {
@@ -873,6 +876,13 @@ test("responsive layout uses vertical mission-control columns and collapses comp
                 repository: "octo/completed",
                 status: "completed",
             })),
+            ...Array.from({ length: 5 }, (_, index) => ({
+                id: `archived-${index}`,
+                parentId: "root",
+                name: `Archived child ${index}`,
+                repository: "octo/archived",
+                status: "archived",
+            })),
             {
                 id: "deep",
                 parentId: "current",
@@ -884,21 +894,26 @@ test("responsive layout uses vertical mission-control columns and collapses comp
         "current"
     );
 
-    for (const [width, height] of [
-        [420, 900],
-        [700, 1100],
+    for (const [width, height, orientation] of [
+        [280, 700, "vertical"],
+        [320, 700, "vertical"],
+        [480, 700, "vertical"],
+        [700, 700, "vertical"],
+        [960, 600, "horizontal"],
+        [960, 1200, "vertical"],
     ]) {
         const layout = layoutResponsiveConstellation(source, { width, height });
-        assert.equal(layout.orientation, "vertical");
+        assert.equal(layout.orientation, orientation);
         assert.equal(layout.completedCount, 12);
+        assert.equal(layout.archivedCount, 5);
         assert.equal(layout.nodes.some((node) => node.id === completedShelfId), true);
+        assert.equal(layout.nodes.some((node) => node.id === archivedShelfId), true);
         assert.equal(layout.nodes.some((node) => node.id === "completed-0"), false);
+        assert.equal(layout.nodes.some((node) => node.id === "archived-0"), false);
         const root = layout.nodes.find((node) => node.id === "root");
         const waiting = layout.nodes.find((node) => node.id === "waiting");
         const current = layout.nodes.find((node) => node.id === "current");
         const deep = layout.nodes.find((node) => node.id === "deep");
-        assert.equal(root.x < current.x, true);
-        assert.equal(current.x < deep.x, true);
         assert.equal(current.isLocalModel, true);
         assert.equal(
             layout.nodes.find((node) => node.id === completedShelfId).isLocalModel,
@@ -906,8 +921,28 @@ test("responsive layout uses vertical mission-control columns and collapses comp
         );
         assert.equal(waiting.y <= current.y, true);
         assert.equal(layout.cardWidth >= 172, true);
-        assert.equal(layout.cardHeight, 72);
+        assert.equal(layout.cardHeight, 76);
         assert.equal(layout.height >= height, true);
+        if (orientation === "vertical") {
+            assert.equal(root.x < current.x, true);
+            assert.equal(current.x < deep.x, true);
+            const archivedShelf = layout.nodes.find(
+                (node) => node.id === archivedShelfId
+            );
+            const completedShelf = layout.nodes.find(
+                (node) => node.id === completedShelfId
+            );
+            assert.equal(waiting.y < current.y, true);
+            assert.equal(current.y < archivedShelf.y, true);
+            assert.equal(archivedShelf.y < completedShelf.y, true);
+            assert.equal(layout.width, Math.max(280, width));
+            for (const node of layout.nodes) {
+                assert.equal(node.x - layout.cardWidth / 2 >= 0, true);
+                assert.equal(node.x + layout.cardWidth / 2 <= layout.width, true);
+            }
+        } else {
+            assert.equal(layout.width <= 960, true);
+        }
     }
 
     const expanded = layoutResponsiveConstellation(source, {
@@ -916,21 +951,188 @@ test("responsive layout uses vertical mission-control columns and collapses comp
         completedExpanded: true,
     });
     assert.equal(expanded.completedCount, 12);
+    assert.equal(expanded.archivedCount, 5);
     assert.equal(expanded.nodes.some((node) => node.id === completedShelfId), true);
+    assert.equal(expanded.nodes.some((node) => node.id === archivedShelfId), true);
     assert.equal(
         expanded.nodes.filter((node) => node.status === "completed" && !node.isShelf).length,
         12
     );
+    assert.equal(
+        expanded.nodes.filter((node) => node.status === "archived" && !node.isShelf)
+            .length,
+        0
+    );
     assert.equal(expanded.height > 900, true);
+
+    const archivedExpanded = layoutResponsiveConstellation(source, {
+        width: 420,
+        height: 900,
+        archivedExpanded: true,
+    });
+    assert.equal(
+        archivedExpanded.nodes.filter(
+            (node) => node.status === "archived" && !node.isShelf
+        ).length,
+        5
+    );
+    assert.equal(
+        archivedExpanded.nodes.filter(
+            (node) => node.status === "completed" && !node.isShelf
+        ).length,
+        0
+    );
 
     const wide = layoutResponsiveConstellation(source, { width: 1200, height: 700 });
     assert.equal(wide.orientation, "horizontal");
     assert.equal(wide.cardHeight, 76);
     assert.equal(wide.nodes.find((node) => node.id === "current").isLocalModel, true);
-    assert.equal(orientationForSize(420, 900), "vertical");
-    assert.equal(orientationForSize(700, 1100), "vertical");
-    assert.equal(orientationForSize(1200, 700), "horizontal");
+    assert.equal(orientationForSize(280, 700), "vertical");
+    assert.equal(orientationForSize(320, 700), "vertical");
+    assert.equal(orientationForSize(480, 700), "vertical");
+    assert.equal(orientationForSize(700, 700), "vertical");
+    assert.equal(
+        orientationForSize(960, 600, { nodeCount: 6, leafCount: 3 }),
+        "horizontal"
+    );
+    assert.equal(
+        orientationForSize(960, 1200, { nodeCount: 6, leafCount: 3 }),
+        "vertical"
+    );
+    assert.equal(
+        orientationForSize(960, 600, { nodeCount: 14, leafCount: 12 }),
+        "vertical"
+    );
     assert.equal(fitWidthScale(420, 2400), 0.82);
+});
+
+test("attention and busy sessions sort ahead of idle and collapsed shelves", () => {
+    const state = normalizeConstellation(
+        [
+            {
+                id: "root",
+                name: "Root",
+                repository: "octo/root",
+                status: "idle",
+            },
+            ...[
+                "completed",
+                "archived",
+                "idle",
+                "busy",
+                "failed",
+                "blocked",
+                "waiting-plan",
+                "waiting-user",
+            ].map((status) => ({
+                id: status,
+                parentId: "root",
+                name: status,
+                repository: "octo/root",
+                status,
+            })),
+        ],
+        "busy"
+    );
+    const layout = layoutResponsiveConstellation(state, {
+        width: 480,
+        height: 900,
+    });
+    assert.deepEqual(
+        layout.nodes
+            .filter((node) => node.id !== "root")
+            .sort((left, right) => left.y - right.y)
+            .map((node) => node.id),
+        [
+            "waiting-user",
+            "waiting-plan",
+            "blocked",
+            "failed",
+            "busy",
+            "idle",
+            archivedShelfId,
+            completedShelfId,
+        ]
+    );
+});
+
+test("dense synthetic overview and project roots stay bounded in half-screen panes", () => {
+    const overview = normalizeConstellation(
+        Array.from({ length: 12 }, (_, index) => ({
+            id: `session-${index}`,
+            name: `Session ${index}`,
+            projectId: `project-${index}`,
+            projectName: `Project ${index}`,
+            repository: `octo/project-${index}`,
+            status: index % 2 ? "idle" : "busy",
+        })),
+        "session-0",
+        { scope: "all", relationships: true, projects: true }
+    );
+    const overviewLayout = layoutResponsiveConstellation(overview, {
+        width: 960,
+        height: 600,
+    });
+    assert.equal(overview.rootId, overviewRootId);
+    assert.equal(overviewLayout.orientation, "vertical");
+    assert.equal(overviewLayout.width, 960);
+    assert.equal(
+        overviewLayout.nodes.filter((node) => !node.synthetic).length,
+        overview.diagnostics.selectedRealSessionCount
+    );
+
+    const project = filterConstellationView(crossProjectFixtureState("all"), {
+        project: "Project A",
+    });
+    const projectLayout = layoutResponsiveConstellation(project, {
+        width: 480,
+        height: 900,
+    });
+    assert.equal(project.rootId, overviewRootId);
+    assert.equal(projectLayout.orientation, "vertical");
+    assert.equal(projectLayout.width, 480);
+    assert.equal(
+        projectLayout.nodes.some(
+            (node) => node.id === "a-waiting" && node.status === "waiting-user"
+        ),
+        true
+    );
+});
+
+test("card corner marker slots are shared, distinct, and future-ready", () => {
+    const slots = cardMarkerLayout(172, 76);
+    assert.deepEqual(Object.keys(slots), [
+        "status",
+        "identity",
+        "activity",
+        "trust",
+    ]);
+    assert.equal(slots.status.x < 0 && slots.status.y < 0, true);
+    assert.equal(slots.identity.right > 0 && slots.identity.y < 0, true);
+    assert.equal(slots.activity.x > 0 && slots.activity.y > 0, true);
+    assert.equal(slots.trust.x < 0 && slots.trust.y > 0, true);
+    assert.notDeepEqual(slots.activity, slots.trust);
+});
+
+test("automatic announcements ignore timestamps and report operational changes", () => {
+    const previous = fixtureState();
+    const timestampOnly = structuredClone(previous);
+    timestampOnly.generatedAt = "2026-09-25T23:00:00.000Z";
+    timestampOnly.nodes[0].updatedAt = "2026-09-25T23:00:00.000Z";
+    assert.equal(describeMeaningfulConstellationChange(previous, timestampOnly), "");
+
+    const changed = structuredClone(previous);
+    changed.nodes.find((node) => node.id === "busy-child").status = "completed";
+    changed.nodes.push({
+        id: "new-session",
+        name: "New session",
+        repository: "octo/new",
+        status: "idle",
+    });
+    assert.equal(
+        describeMeaningfulConstellationChange(previous, changed),
+        "1 session added. 1 session changed status."
+    );
 });
 
 test("pinch gesture zooms around the moving midpoint", () => {
@@ -1606,7 +1808,7 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
         html,
         /node\.parentId\s*\?\s*"parent session outside this project; grouped for display"\s*:\s*"no recorded parent; grouped for display"/
     );
-    assert.match(html, /localLabel\.textContent = node\.demoLocalModel \? "Demo local model" : "Local model"/);
+    assert.match(html, /localLabel\.textContent = node\.demoLocalModel \? "Demo local runtime" : "Local runtime"/);
     assert.match(html, /"aria-label": "Runs locally"/);
     assert.match(html, /title\.textContent = "Runs locally"/);
     assert.match(html, /parts\.push\(node\.demoLocalModel \? "Demo local model" : "Local model"\)/);
@@ -1615,11 +1817,125 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     assert.match(html, /node\.isLocalModel && !node\.isShelf/);
     assert.match(html, /--local-model:/);
     assert.match(html, /\.model-detail/);
-    assert.match(html, /\.demo-local-model/);
+    assert.match(html, /\.local-model-label/);
+    assert.match(html, /"LOCAL · " \+ modelLabel/);
     assert.match(html, /y: hasModelLabel \? -20 : -10/);
     assert.match(html, /state\.pointers = new Map|pointers: new Map/);
     assert.match(html, /applyPinchGesture/);
     assert.match(html, /completedExpanded/);
+    assert.match(html, /archivedExpanded/);
+    assert.match(
+        html,
+        /completedExpanded: config\.initialStatus === "completed"/
+    );
+    assert.match(
+        html,
+        /archivedExpanded: config\.initialStatus === "archived"/
+    );
+    assert.match(html, /function toggleShelf\(node\)/);
     assert.match(html, /id="fitWidth"/);
     assert.doesNotMatch(html, />Fit</);
+});
+
+test("renderer uses redundant status symbols in the legend, cards, and inspector", () => {
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+        scopeUrl: "http://127.0.0.1/scope",
+    });
+    assert.match(html, /function nodeStatusMarker\(status/);
+    assert.match(html, /class: "node-status-marker status-" \+ status/);
+    assert.match(html, /className = "status-glyph"/);
+    assert.match(html, /button\.setAttribute\("aria-pressed"/);
+    assert.match(html, /detail-status status-idle/);
+    for (const status of [
+        "busy",
+        "idle",
+        "completed",
+        "waiting-user",
+        "waiting-plan",
+        "blocked",
+        "failed",
+        "archived",
+    ]) {
+        assert.match(html, new RegExp(`status-${status}`));
+    }
+});
+
+test("renderer preserves SVG focus across refreshes and exposes explicit focus rings", () => {
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+        scopeUrl: "http://127.0.0.1/scope",
+    });
+    assert.match(html, /class: "node-focus-ring"/);
+    assert.match(html, /\.node:focus-visible \.node-focus-ring \{ opacity: 1; \}/);
+    assert.match(html, /document\.activeElement\?\.classList\?\.contains\("node"\)/);
+    assert.match(html, /CSS\.escape\(focusedId\)/);
+    assert.match(html, /\.focus\(\{ preventScroll: true \}\)/);
+    assert.match(html, /"aria-current": node\.isCurrent \? "true" : undefined/);
+});
+
+test("renderer honors reduced motion and forced colors with correct badge contrast", () => {
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+        scopeUrl: "http://127.0.0.1/scope",
+    });
+    assert.match(html, /@media \(prefers-reduced-motion: reduce\)/);
+    assert.match(html, /animation-duration: \.001ms !important/);
+    assert.match(html, /\.edge\.working \{ stroke-dasharray: none; \}/);
+    assert.match(html, /\.node-halo \{ display: none; \}/);
+    assert.match(html, /@media \(forced-colors: active\)/);
+    assert.match(html, /background: Canvas/);
+    assert.match(html, /stroke: Highlight/);
+    assert.match(html, /\.current-marker-text \{ fill: HighlightText; \}/);
+    assert.match(html, /forced-color-adjust: none/);
+});
+
+test("renderer keeps chrome, filters, status context, and inspector usable when narrow", () => {
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+        scopeUrl: "http://127.0.0.1/scope",
+    });
+    assert.match(html, /min-width: 280px/);
+    assert.match(html, /@media \(max-width: 720px\)/);
+    assert.match(html, /@media \(max-width: 520px\)/);
+    assert.match(html, /@media \(max-width: 360px\)/);
+    assert.match(html, /grid-template-columns: minmax\(0, 1fr\) auto/);
+    assert.match(html, /\.status-strip[\s\S]*overflow-x: auto/);
+    assert.match(html, /\.inspector \{ max-height: min\(48vh, 320px\); \}/);
+    assert.match(html, /\.inspector-head[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto/);
+    assert.match(html, /width: Math\.max\(280, rect\.width\)/);
+});
+
+test("renderer uses the documented canvas theme contract and meaningful updates only", () => {
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+        scopeUrl: "http://127.0.0.1/scope",
+    });
+    for (const token of [
+        "--background-color-default",
+        "--border-color-default",
+        "--text-color-default",
+        "--text-color-muted",
+        "--color-focus-outline",
+        "--color-white",
+        "--true-color-blue",
+        "--true-color-blue-muted",
+        "--true-color-red",
+        "--font-sans",
+        "--font-mono",
+    ]) {
+        assert.match(html, new RegExp(token));
+    }
+    assert.match(html, /describeMeaningfulConstellationChange\(state\.data, next\)/);
+    assert.match(html, /if \(announcement\) elements\.live\.textContent = announcement/);
 });

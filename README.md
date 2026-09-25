@@ -18,7 +18,7 @@ Copilot can coordinate work across several project sessions, but a text list mak
 - Which agents have completed and can get out of the way?
 - Which repository, branch, model, and reasoning effort belong to each session?
 
-Agent Constellation makes those relationships visible. The current session is marked, parent-child edges show the family tree, animated edges and halos indicate active work, status colors highlight attention, and a details inspector exposes sanitized metadata for a selected session.
+Agent Constellation makes those relationships visible. The current session is marked, parent-child edges show the family tree, restrained motion indicates active work, and a details inspector exposes sanitized metadata for a selected session. Every status also has a distinct shape or symbol, so color is never the only cue.
 
 ## Highlights
 
@@ -41,11 +41,31 @@ Statuses include:
 - **Completed**
 - **Archived**
 
-Completed descendants collapse into a **Completed shelf** so a large constellation remains readable. Expand the shelf when you need to inspect finished work.
+The status strip, cards, and inspector reuse the same semantics: busy is a filled circle, idle a hollow circle, completed a check, user attention a diamond, plan approval a clock, blocked an octagon, failed a cross, and archived a striped square. Visible text remains alongside every marker.
+
+Completed and archived descendants collapse into separate **Completed** and **Archived** shelves so a large constellation remains readable. Sessions needing attention sort first, followed by busy work, idle work, and the two shelves. Expand either shelf when you need to inspect finished or historical work.
 
 ### Responsive side-pane layout
 
-Wide canvases use a horizontal family-tree layout. Narrow or tall side panes automatically switch to a compact vertical mission-control layout with readable cards, horizontal ancestry, and scrollable depth. The toolbar also condenses for narrow panes.
+The layout is designed for the normal right-hand pane first, not for a full-screen diagram. At 280, 320, 480, and 700 pixels, cards use a bounded stacked layout: depth is shown with a small capped indent, connections stay in the left gutter, and the content width never grows beyond the pane. Tall panes use the same bounded layout.
+
+At 960 pixels or wider, a small landscape tree may use the horizontal family-tree view when it has at most 10 visible nodes and four leaves. Dense all-session overviews remain stacked even at that width, preventing ultra-wide canvases and long sideways navigation. The status strip scrolls independently when needed, while toolbar labels, filters, and the inspector compact progressively at 720, 520, and 360 pixels.
+
+### Theme and accessibility behavior
+
+The renderer uses the canvas theme contract instead of app-internal styles:
+
+| Purpose | Canvas tokens |
+|---|---|
+| Surfaces and borders | `--background-color-default`, `--border-color-default` |
+| Primary and secondary text | `--text-color-default`, `--text-color-muted` |
+| Keyboard focus | `--color-focus-outline` |
+| Status accents | `--true-color-blue`, `--true-color-blue-muted`, `--true-color-red`, and semantic true-color peers with fallbacks |
+| Typography | `--font-sans`, `--font-mono`, type-ramp and weight tokens |
+
+Keyboard focus gets an explicit ring around the complete SVG card and is restored to the same session after live renderer refreshes when that session remains visible. Arrow keys move directionally between cards. Automatic live-region messages ignore timestamp-only refreshes and announce only additions, removals, scope changes, or status changes.
+
+Windows high-contrast and other forced-color modes replace decorative surfaces, edges, markers, and focus with system `Canvas`, `CanvasText`, `Highlight`, and `HighlightText` colors. The `CURRENT` badge specifically uses `HighlightText` over `Highlight`. Reduced-motion mode removes pulsing halos and flowing edge dashes in addition to suppressing transitions and attention animations.
 
 ### Model and reasoning badges
 
@@ -58,7 +78,7 @@ A leaf icon means the session has explicit local-runtime metadata. The classifie
 - Providers named `ollama`, `winml`, or `local`
 - Model identifiers beginning with `ollama/`, `ollama:`, `winml/`, `winml:`, `local/`, or `local:`
 
-Model names such as `llama`, `phi`, `mistral`, or `qwen` are **not** assumed to be local without that explicit metadata.
+Model names such as `llama`, `phi`, `mistral`, or `qwen` are **not** assumed to be local without that explicit metadata. Explicit local-runtime sessions show both the leaf and a visible `LOCAL` card prefix; the inspector labels the runtime as **Local runtime** or **Demo local runtime**.
 
 For demonstrations, the canvas accepts an isolated `demoLocalModel: true` open input. It decorates only the current session in the returned canvas state and does not alter stored Copilot session data or affect other open Agent Constellation instances.
 
@@ -163,14 +183,14 @@ For an explicit local-model UI demonstration:
 - **Filter** narrows by status, project, or repository.
 - **Click or press Enter/Space** on a session to open its inspector.
 - **Arrow keys** move focus directionally between session cards.
-- **Click the Completed shelf** to expand or collapse completed descendants.
+- **Click the Completed or Archived shelf** to expand or collapse those descendants.
 - **Drag empty canvas space** to pan.
 - **Pinch** with two touch or pointer contacts to zoom and pan around the moving midpoint.
 - **Ctrl + wheel** zooms around the pointer.
 - **Double-click empty canvas space** to zoom in.
 - **Escape** closes the inspector.
 
-Animations honor `prefers-reduced-motion`.
+Animations honor `prefers-reduced-motion`; no completion confetti or persistent success animation is used, so completed work remains calm in large constellations.
 
 ## Update or reinstall
 
@@ -186,8 +206,8 @@ The installable extension lives entirely in [`.github/extensions/agent-constella
 |---|---|
 | `extension.mjs` | Declares the canvas, open schema, actions, and lifecycle with the Copilot SDK. |
 | `data.mjs` | Reads local sources, derives statuses and relationships, sanitizes project/session metadata, normalizes tree/all scopes, filters state, and isolates demo decoration. |
-| `layout.mjs` | Produces deterministic horizontal/vertical layouts, explicit synthetic containment, completed-shelf behavior, model labels, fit scaling, and pinch transforms. |
-| `renderer.mjs` | Generates the accessible, responsive, theme-aware canvas UI and per-view scope/project/repository controls. |
+| `layout.mjs` | Produces deterministic bounded-stack/horizontal layouts, density-aware orientation, attention-first ordering, completed/archived shelves, shared card-marker slots, meaningful-change summaries, explicit synthetic containment, model labels, fit scaling, and pinch transforms. |
+| `renderer.mjs` | Generates the accessible, right-pane-first, theme-aware canvas UI and per-view scope/project/repository controls. |
 | `server.mjs` | Hosts the token-protected loopback page, JSON state, per-instance scope endpoint, refresh endpoint, and SSE stream. |
 | `agent-constellation.test.mjs` | Covers multi-project collection, sanitization, identity labels, real/synthetic relationships, scope isolation, responsive layout, gestures, local-model semantics, renderer accessibility, and loopback protections. |
 | `copilot-extension.json` | Identifies the folder as a shareable/installable Copilot extension. |
@@ -242,7 +262,7 @@ The TypeScript check compiles a small SDK contract fixture so changes to canvas 
 
 To exercise the extension in this repository, reload Copilot extensions, open **Agent Constellation**, invoke its `refresh` and `get_state` actions, and verify invalid open/action inputs are rejected by the SDK schema.
 
-The extension intentionally has **no runtime dependencies**. Keep renderer assets self-contained and preserve the loopback, token, sanitization, and read-only database guarantees.
+The extension intentionally has **no runtime dependencies**. Keep renderer assets self-contained, use the documented canvas theme tokens, and preserve the loopback, token, sanitization, and read-only database guarantees.
 
 ## Contributing
 
