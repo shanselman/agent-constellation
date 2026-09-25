@@ -65,7 +65,7 @@ export function renderConstellationHtml(config) {
     .app {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: auto auto minmax(0, 1fr);
+      grid-template-rows: auto auto auto minmax(0, 1fr);
       height: 100vh;
     }
     .chrome {
@@ -227,8 +227,113 @@ export function renderConstellationHtml(config) {
       white-space: nowrap;
     }
     select { min-width: 0; max-width: 240px; padding: 4px 24px 4px 7px; }
-    .workspace {
+    .attention-radar {
       grid-row: 3;
+      min-width: 0;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel-bg);
+    }
+    .attention-heading {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 34px;
+      padding: 4px 8px;
+      cursor: pointer;
+      list-style: none;
+    }
+    .attention-heading::-webkit-details-marker { display: none; }
+    .attention-heading:focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: -2px;
+    }
+    .attention-title {
+      font-size: 12px;
+      font-weight: var(--font-weight-semibold, 600);
+      white-space: nowrap;
+    }
+    .attention-count {
+      min-width: 20px;
+      padding: 0 6px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--text);
+      font-size: 10px;
+      line-height: 18px;
+      text-align: center;
+    }
+    .attention-summary {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 11px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .attention-caret {
+      margin-left: auto;
+      color: var(--muted);
+      transition: transform 160ms ease;
+    }
+    .attention-radar[open] .attention-caret { transform: rotate(90deg); }
+    .attention-panel {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+      padding: 0 8px 5px;
+    }
+    .attention-list {
+      display: flex;
+      flex: 1 1 auto;
+      gap: 5px;
+      min-width: 0;
+      margin: 0;
+      padding: 0 1px 2px;
+      overflow-x: auto;
+      list-style: none;
+      scrollbar-width: thin;
+    }
+    .attention-list:empty { display: none; }
+    .attention-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-height: 28px;
+      max-width: 250px;
+      padding: 2px 7px;
+      border-color: color-mix(in srgb, var(--status-color) 62%, var(--border));
+      white-space: nowrap;
+    }
+    .attention-item .status-glyph { flex: none; }
+    .attention-kind {
+      color: var(--status-color);
+      font-size: 10px;
+      font-weight: var(--font-weight-semibold, 600);
+    }
+    .attention-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .attention-age {
+      flex: none;
+      color: var(--muted);
+      font-size: 10px;
+    }
+    .attention-empty, .attention-overflow {
+      color: var(--muted);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .attention-overflow {
+      min-height: 24px;
+      padding: 1px 5px;
+      border-color: transparent;
+      background: transparent;
+    }
+    .workspace {
+      grid-row: 4;
       display: grid;
       grid-template-rows: minmax(0, 1fr) auto;
       min-width: 0;
@@ -545,6 +650,21 @@ export function renderConstellationHtml(config) {
       .filters .search-label { flex-basis: auto; }
       .filter-summary { margin-left: 0; }
       select, input[type="search"] { max-width: none; width: 100%; }
+      .attention-panel {
+        align-items: stretch;
+        max-height: 176px;
+        overflow-y: auto;
+      }
+      .attention-list {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        overflow: visible;
+      }
+      .attention-item {
+        width: 100%;
+        max-width: none;
+      }
+      .attention-overflow { align-self: center; }
       dl { grid-template-columns: 1fr; gap: 1px; }
       dd { margin-bottom: 4px; }
       .inspector, .diagnostics { max-height: min(48vh, 320px); }
@@ -556,6 +676,7 @@ export function renderConstellationHtml(config) {
       .brand h1 { font-size: 14px; }
       .summary { display: none; }
       .filters { padding: 6px; }
+      .attention-summary { font-size: 10px; }
       .inspector, .diagnostics { padding-inline: 8px; }
       .trust-control:not(.limited):not(.degraded):not(.demo) #trustLabel {
         display: none;
@@ -585,9 +706,10 @@ export function renderConstellationHtml(config) {
       }
       .edge.working { stroke-dasharray: none; }
       .node-halo { display: none; }
+      .attention-caret { transition: none; }
     }
     @media (forced-colors: active) {
-      body, .chrome, .filters, .inspector, .inspector-head,
+      body, .chrome, .filters, .attention-radar, .inspector, .inspector-head,
       .diagnostics, .diagnostics-head, .stage {
         background: Canvas;
         color: CanvasText;
@@ -681,6 +803,19 @@ export function renderConstellationHtml(config) {
       </label>
       <span class="filter-summary" id="filterSummary"></span>
     </section>
+    <details class="attention-radar" id="attentionRadar" open>
+      <summary class="attention-heading" id="attentionHeading">
+        <span class="attention-title">Needs attention</span>
+        <span class="attention-count" id="attentionCount">0</span>
+        <span class="attention-summary" id="attentionSummary">Checking operational state…</span>
+        <span class="attention-caret" aria-hidden="true">›</span>
+      </summary>
+      <div class="attention-panel">
+        <ol class="attention-list" id="attentionList"></ol>
+        <button class="attention-overflow" id="attentionOverflow" type="button" hidden></button>
+        <span class="attention-empty" id="attentionEmpty">Nothing needs attention right now.</span>
+      </div>
+    </details>
     <main class="workspace">
       <section class="stage" id="stage" aria-label="Agent family tree">
         <svg id="constellation" role="tree" aria-label="Copilot project session constellation" aria-describedby="keyboardHelp">
@@ -726,7 +861,7 @@ export function renderConstellationHtml(config) {
     Tree shows the current session family. All sessions adds a synthetic overview container; dashed grouping connections do not represent parent-child lineage.
   </div>
   <div class="sr-only" id="searchHelp">Searches sanitized session names, projects, repositories, branches, pull requests, issues, tasks, models, and statuses.</div>
-  <div class="sr-only" id="keyboardHelp">Use arrow keys between nearby cards, Page Up for the visual parent, Page Down for the first child, Home for the current session, Control Home for the root, slash to open search, F to focus a selected lineage, and Escape to close details or diagnostics or clear focus.</div>
+  <div class="sr-only" id="keyboardHelp">Use the Needs attention queue to reveal a session and open its details. In the tree, use arrow keys between nearby cards, Page Up for the visual parent, Page Down for the first child, Home for the current session, Control Home for the root, slash to open search, F to focus a selected lineage, and Escape to close details or diagnostics or clear focus.</div>
   <div class="sr-only" id="live" aria-live="polite"></div>
   <script type="module">
     import {
@@ -746,6 +881,10 @@ export function renderConstellationHtml(config) {
       selectConstellationVisibility,
       visualParentId
     } from "./layout.mjs";
+    import {
+      buildAttentionQueue,
+      resolveAttentionFocus
+    } from "./attention.mjs";
 
     const config = ${serializedConfig};
     const svgNs = "http://www.w3.org/2000/svg";
@@ -768,6 +907,8 @@ export function renderConstellationHtml(config) {
       data: null,
       visibleState: null,
       layout: null,
+      attention: null,
+      attentionRovingId: null,
       selectedId: null,
       rovingId: null,
       status: config.initialStatus || "",
@@ -790,11 +931,16 @@ export function renderConstellationHtml(config) {
       "summary", "scopeSelect", "trustToggle", "trustLabel", "refresh", "searchFocus", "showAll", "home", "fitWidth", "zoomOut", "zoomIn",
       "filtersToggle", "filters", "statusFilter", "repoFilter", "legend",
       "projectFilter", "searchInput", "filterSummary",
+      "attentionRadar", "attentionHeading", "attentionCount", "attentionSummary", "attentionList",
+      "attentionOverflow", "attentionEmpty",
       "stage", "constellation", "viewport", "edges", "nodes", "empty",
       "inspector", "inspectorClose", "focusSelected", "detailName", "detailStatus", "details",
       "sourceNote", "diagnostics", "diagnosticsClose", "trustSummary",
       "demoNotice", "sourceDiagnostics", "provenanceDetails", "privacyNote", "live"
     ].map((id) => [id, document.getElementById(id)]));
+    if (window.matchMedia("(max-width: 480px)").matches) {
+      elements.attentionRadar.open = false;
+    }
 
     function svgElement(name, attributes) {
       const item = document.createElementNS(svgNs, name);
@@ -894,6 +1040,16 @@ export function renderConstellationHtml(config) {
       const minutes = Math.floor(seconds / 60);
       if (minutes < 60) return minutes + "m " + (seconds % 60) + "s";
       return Math.floor(minutes / 60) + "h " + (minutes % 60) + "m";
+    }
+
+    function compactAge(milliseconds) {
+      if (!Number.isFinite(milliseconds)) return "";
+      const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+      if (seconds < 60) return "<1m";
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return minutes + "m";
+      const hours = Math.floor(minutes / 60);
+      return hours < 48 ? hours + "h" : Math.floor(hours / 24) + "d";
     }
 
     function statusText(node) {
@@ -1073,7 +1229,22 @@ export function renderConstellationHtml(config) {
       appendDetail("Issue", node.issue);
       appendDetail("Human gate", node.humanGate?.label);
       appendDetail("Busy elapsed", node.status === "busy" ? elapsed(node.busySince) : "");
-      appendDetail("Last activity", node.updatedAt ? new Date(node.updatedAt).toLocaleString() : "");
+      const attentionItem = state.attention?.items.find((item) => item.id === node.id);
+      appendDetail("Attention", attentionItem?.label);
+      appendDetail(
+        "Inactive for",
+        attentionItem?.kind === "inactive-busy"
+          ? compactAge(attentionItem.ageMs)
+          : ""
+      );
+      appendDetail(
+        "Last meaningful activity",
+        node.lastActivityAt
+          ? new Date(node.lastActivityAt).toLocaleString()
+          : node.updatedAt
+            ? new Date(node.updatedAt).toLocaleString()
+            : ""
+      );
       appendDetail("Session ID", node.id, true);
       elements.sourceNote.textContent =
         "Repository: " + provenanceText(node.provenance?.repository) + ". " +
@@ -1407,6 +1578,188 @@ export function renderConstellationHtml(config) {
         });
         elements.legend.appendChild(button);
       });
+    }
+
+    function attentionAgeText(item) {
+      const age = compactAge(item.ageMs);
+      if (!age) return "";
+      if (item.kind === "inactive-busy") return age + " inactive";
+      if (item.kind === "recent-completed") return age + " ago";
+      return age + " waiting";
+    }
+
+    function resetLocalNavigationForAttention() {
+      state.search = "";
+      state.focusSessionId = "";
+      state.status = "";
+      state.repository = "";
+      elements.searchInput.value = "";
+      elements.statusFilter.value = "";
+      elements.repoFilter.value = "";
+      if (!elements.projectFilter.disabled) {
+        state.project = "";
+        elements.projectFilter.value = "";
+      }
+    }
+
+    function activateAttentionItem(item) {
+      const sourceNode = state.data?.nodes.find((node) => node.id === item.id);
+      if (!sourceNode) return;
+      resetLocalNavigationForAttention();
+      state.revealedIds.add(item.id);
+      state.selectedId = item.id;
+      state.rovingId = item.id;
+      render();
+      openInspector(sourceNode, false);
+      requestAnimationFrame(() => {
+        focusNode(item.id, { smooth: true });
+      });
+      elements.live.textContent =
+        item.label + ": " + item.name +
+        ". Session revealed and details opened.";
+    }
+
+    function renderAttention() {
+      const previousIds = [
+        ...elements.attentionList.querySelectorAll("[data-attention-id]")
+      ].map((button) => button.dataset.attentionId);
+      const focusedId = document.activeElement?.dataset?.attentionId || "";
+      const overflowFocused =
+        document.activeElement === elements.attentionOverflow;
+      const queue = state.attention || buildAttentionQueue(state.data?.nodes);
+      state.attention = queue;
+      const focusResolution = resolveAttentionFocus({
+        previousIds,
+        nextIds: queue.targetIds,
+        focusedId,
+        hasOverflow: queue.overflowCount > 0
+      });
+      state.attentionRovingId =
+        (queue.targetIds.includes(focusedId) && focusedId) ||
+        (queue.targetIds.includes(state.attentionRovingId) &&
+          state.attentionRovingId) ||
+        (focusResolution.kind === "item" && focusResolution.id) ||
+        queue.targetIds[0] ||
+        null;
+      elements.attentionCount.textContent = String(queue.totalCount);
+      elements.attentionSummary.textContent = queue.summary;
+      elements.attentionHeading.setAttribute(
+        "aria-label",
+        "Needs attention. " + queue.summary + ". " +
+          (elements.attentionRadar.open ? "Collapse queue." : "Expand queue.")
+      );
+      elements.attentionEmpty.hidden = queue.totalCount > 0;
+      elements.attentionOverflow.hidden = queue.overflowCount === 0;
+      elements.attentionOverflow.textContent = queue.overflowCount
+        ? "+" + queue.overflowCount + " more summarized"
+        : "";
+      elements.attentionOverflow.setAttribute(
+        "aria-label",
+        queue.overflowCount
+          ? queue.overflowCount +
+              " additional attention sessions are summarized."
+          : "No additional attention sessions."
+      );
+      elements.attentionList.replaceChildren();
+      queue.items.forEach((item) => {
+        const listItem = document.createElement("li");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.tabIndex = item.id === state.attentionRovingId ? 0 : -1;
+        button.className = "attention-item status-" + item.status;
+        button.dataset.attentionId = item.id;
+        button.setAttribute(
+          "aria-label",
+          item.label + ", " + item.shapeLabel + " status: " + item.name +
+            (item.repository ? ", " + item.repository : "") +
+            (attentionAgeText(item) ? ", " + attentionAgeText(item) : "") +
+            ". Reveal session and open details."
+        );
+        const glyph = document.createElement("span");
+        glyph.className = "status-glyph";
+        glyph.setAttribute("aria-hidden", "true");
+        const kind = document.createElement("span");
+        kind.className = "attention-kind";
+        kind.textContent = item.label;
+        const name = document.createElement("span");
+        name.className = "attention-name";
+        name.textContent = item.name;
+        const age = document.createElement("span");
+        age.className = "attention-age";
+        age.textContent = attentionAgeText(item);
+        button.append(glyph, kind, name, age);
+        button.addEventListener("focus", () => {
+          state.attentionRovingId = item.id;
+          elements.attentionList
+            .querySelectorAll("[data-attention-id]")
+            .forEach((candidate) => {
+              candidate.tabIndex =
+                candidate.dataset.attentionId === item.id ? 0 : -1;
+            });
+        });
+        button.addEventListener("keydown", (event) => {
+          const currentIndex = queue.targetIds.indexOf(item.id);
+          let targetIndex;
+          if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+            targetIndex = Math.min(queue.items.length - 1, currentIndex + 1);
+          } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+            targetIndex = Math.max(0, currentIndex - 1);
+          } else if (event.key === "Home") {
+            targetIndex = 0;
+          } else if (event.key === "End") {
+            targetIndex = queue.items.length - 1;
+          } else {
+            return;
+          }
+          event.preventDefault();
+          const targetId = queue.targetIds[targetIndex];
+          elements.attentionList.querySelector(
+            '[data-attention-id="' + CSS.escape(targetId) + '"]'
+          )?.focus();
+        });
+        button.addEventListener("click", () => activateAttentionItem(item));
+        listItem.appendChild(button);
+        elements.attentionList.appendChild(listItem);
+      });
+      if (focusedId) {
+        let focusTarget;
+        if (focusResolution.kind === "item") {
+          focusTarget = elements.attentionList.querySelector(
+            '[data-attention-id="' +
+              CSS.escape(focusResolution.id) +
+              '"]'
+          );
+        } else if (focusResolution.kind === "overflow") {
+          focusTarget = elements.attentionOverflow;
+        } else if (focusResolution.kind === "heading") {
+          focusTarget = elements.attentionHeading;
+        }
+        focusTarget?.focus({ preventScroll: true });
+        if (focusResolution.changed) {
+          if (focusResolution.kind === "item") {
+            const focusedItem = queue.items.find(
+              (item) => item.id === focusResolution.id
+            );
+            elements.live.textContent =
+              "Attention queue updated. Focus moved to " +
+              (focusedItem
+                ? focusedItem.label + ": " + focusedItem.name
+                : "the next attention item") + ".";
+          } else if (focusResolution.kind === "overflow") {
+            elements.live.textContent =
+              "Attention queue updated. Focus moved to the overflow summary.";
+          } else {
+            elements.live.textContent = queue.totalCount
+              ? "Attention queue updated. Focus moved to the Needs attention summary."
+              : "Attention queue is empty. Focus moved to the Needs attention summary.";
+          }
+        }
+      } else if (overflowFocused && queue.overflowCount === 0) {
+        elements.attentionHeading.focus({ preventScroll: true });
+        elements.live.textContent = queue.totalCount
+          ? "Attention overflow cleared. Focus moved to the Needs attention summary."
+          : "Attention queue is empty. Focus moved to the Needs attention summary.";
+      }
     }
 
     function renderRepositories() {
@@ -1881,6 +2234,9 @@ export function renderConstellationHtml(config) {
     function render() {
       if (!state.data) return;
       const size = stageSize();
+      state.attention = buildAttentionQueue(state.data.nodes, {
+        now: Date.now()
+      });
       const visibleState = filteredState();
       state.visibleState = visibleState;
       state.layout = layoutResponsiveConstellation(visibleState, {
@@ -1902,6 +2258,7 @@ export function renderConstellationHtml(config) {
       renderEdges(byId);
       renderNodes();
       renderLegend();
+      renderAttention();
       updateSummary();
       renderDiagnostics();
       const projectFilter = visibleState?.diagnostics?.projectFilter;
@@ -1984,6 +2341,18 @@ export function renderConstellationHtml(config) {
         presentationFingerprint(state.data) !== presentationFingerprint(next);
       state.data = next;
       if (!presentationChanged) {
+        const previousAttention = JSON.stringify(
+          (state.attention?.items || []).map((item) => [item.id, item.kind])
+        );
+        const nextAttention = buildAttentionQueue(next.nodes, {
+          now: Date.now()
+        });
+        const nextAttentionFingerprint = JSON.stringify(
+          nextAttention.items.map((item) => [item.id, item.kind])
+        );
+        state.attention = nextAttention;
+        if (previousAttention !== nextAttentionFingerprint) render();
+        else renderAttention();
         renderDiagnostics();
         return;
       }
@@ -2125,6 +2494,18 @@ export function renderConstellationHtml(config) {
     }
 
     elements.refresh.addEventListener("click", () => refresh(true));
+    elements.attentionRadar.addEventListener("toggle", () => {
+      elements.attentionHeading.setAttribute(
+        "aria-label",
+        "Needs attention. " + (state.attention?.summary || "Checking operational state") +
+          ". " + (elements.attentionRadar.open ? "Collapse queue." : "Expand queue.")
+      );
+    });
+    elements.attentionOverflow.addEventListener("click", () => {
+      elements.live.textContent =
+        (state.attention?.overflowCount || 0) +
+        " additional attention sessions are summarized. Use status filters or search to inspect them.";
+    });
     elements.trustToggle.addEventListener("click", () => {
       if (elements.diagnostics.classList.contains("open")) closeDiagnostics();
       else openDiagnostics();
@@ -2295,6 +2676,19 @@ export function renderConstellationHtml(config) {
         if (selected) elements.detailStatus.lastElementChild.textContent = statusText(selected);
       }
     }, 1000);
+    window.setInterval(() => {
+      if (!state.data) return;
+      const previous = JSON.stringify(
+        (state.attention?.items || []).map((item) => [item.id, item.kind])
+      );
+      const next = buildAttentionQueue(state.data.nodes, { now: Date.now() });
+      state.attention = next;
+      const current = JSON.stringify(
+        next.items.map((item) => [item.id, item.kind])
+      );
+      if (previous !== current) render();
+      else renderAttention();
+    }, 30000);
     window.setInterval(() => refresh(false), 30000);
   </script>
 </body>

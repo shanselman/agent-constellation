@@ -6,6 +6,13 @@ import path from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import {
+    ATTENTION_THRESHOLDS,
+    buildAttentionQueue,
+    classifyAttentionNode,
+    lastMeaningfulActivityTimestamp,
+    resolveAttentionFocus,
+} from "./attention.mjs";
+import {
     CANVAS_OPEN_INPUT_SCHEMA,
     FILTER_PROPERTIES,
     collectConstellationState,
@@ -455,6 +462,220 @@ test("normalization sanitizes metadata and layout is deterministic", () => {
         ["busy-child", "root-session", "waiting-grandchild"]
     );
     assert.equal(layoutConstellation([], "missing").nodes.length, 0);
+});
+
+test("attention thresholds use inactivity since meaningful activity at exact boundaries", () => {
+    const now = Date.parse("2026-09-26T00:00:00.000Z");
+    const before = (milliseconds) =>
+        new Date(now - milliseconds).toISOString();
+    const queue = buildAttentionQueue(
+        [
+            {
+                id: "waiting-user",
+                name: "Question",
+                repository: "octo/a",
+                status: "waiting-user",
+                updatedAt: before(4_000),
+            },
+            {
+                id: "waiting-plan",
+                name: "Plan",
+                repository: "octo/a",
+                status: "waiting-plan",
+                updatedAt: before(3_000),
+            },
+            {
+                id: "blocked",
+                name: "Permission",
+                repository: "octo/a",
+                status: "blocked",
+                updatedAt: before(2_000),
+            },
+            {
+                id: "failed",
+                name: "Failure",
+                repository: "octo/a",
+                status: "failed",
+                updatedAt: before(1_000),
+            },
+            {
+                id: "inactive-boundary",
+                name: "Inactive runner",
+                repository: "octo/a",
+                status: "busy",
+                busySince: before(60 * 60 * 1000),
+                lastActivityAt: before(
+                    ATTENTION_THRESHOLDS.inactiveBusyMs
+                ),
+                updatedAt: before(1_000),
+            },
+            {
+                id: "active-boundary",
+                name: "Active runner",
+                repository: "octo/a",
+                status: "busy",
+                busySince: before(12 * 60 * 60 * 1000),
+                lastActivityAt: before(
+                    ATTENTION_THRESHOLDS.inactiveBusyMs - 1
+                ),
+            },
+            {
+                id: "recent-boundary",
+                name: "Fresh result",
+                repository: "octo/a",
+                status: "completed",
+                updatedAt: before(
+                    ATTENTION_THRESHOLDS.recentCompletionMs
+                ),
+            },
+            {
+                id: "completed-too-old",
+                name: "Old result",
+                repository: "octo/a",
+                status: "completed",
+                updatedAt: before(
+                    ATTENTION_THRESHOLDS.recentCompletionMs + 1
+                ),
+            },
+            {
+                id: "future-completion",
+                name: "Future result",
+                repository: "octo/a",
+                status: "completed",
+                updatedAt: new Date(now + 1).toISOString(),
+            },
+        ],
+        { now, limit: 20 }
+    );
+    assert.deepEqual(
+        queue.items.map(({ id, kind }) => ({ id, kind })),
+        [
+            { id: "waiting-user", kind: "waiting-user" },
+            { id: "waiting-plan", kind: "waiting-plan" },
+            { id: "blocked", kind: "blocked" },
+            { id: "failed", kind: "failed" },
+            { id: "inactive-boundary", kind: "inactive-busy" },
+            { id: "recent-boundary", kind: "recent-completed" },
+        ]
+    );
+    assert.equal(
+        classifyAttentionNode(
+            {
+                status: "busy",
+                busySince: before(24 * 60 * 60 * 1000),
+                lastActivityAt: before(
+                    ATTENTION_THRESHOLDS.inactiveBusyMs - 1
+                ),
+            },
+            now
+        ),
+        undefined
+    );
+    assert.equal(
+        lastMeaningfulActivityTimestamp({
+            lastActivityAt: before(2_000),
+            updatedAt: before(1_000),
+        }),
+        now - 2_000
+    );
+});
+
+test("attention queue ordering, cap, overflow, and sanitization are deterministic", () => {
+    const now = Date.parse("2026-09-26T00:00:00.000Z");
+    const updatedAt = new Date(now - 1_000).toISOString();
+    const nodes = [
+        ...Array.from({ length: 8 }, (_, index) => ({
+            id: `wait-${String(index).padStart(2, "0")}`,
+            name:
+                index === 0
+                    ? `Alpha\u0000 ${"x".repeat(180)}`
+                    : `Session ${String(index).padStart(2, "0")}`,
+            repository: `octo/${index}`,
+            status: "waiting-user",
+            updatedAt,
+        })),
+        {
+            id: "synthetic",
+            name: "Synthetic",
+            status: "failed",
+            synthetic: true,
+        },
+    ];
+    const first = buildAttentionQueue(nodes, { now, limit: 3 });
+    const second = buildAttentionQueue([...nodes].reverse(), {
+        now,
+        limit: 3,
+    });
+    assert.deepEqual(first.targetIds, second.targetIds);
+    assert.deepEqual(first.targetIds, ["wait-00", "wait-01", "wait-02"]);
+    assert.equal(first.totalCount, 8);
+    assert.equal(first.actionCount, 8);
+    assert.equal(first.updateCount, 0);
+    assert.equal(first.overflowCount, 5);
+    assert.equal(first.summary, "8 need action · +5 more");
+    assert.equal(first.items[0].name.includes("\u0000"), false);
+    assert.equal(first.items[0].name.length <= 140, true);
+});
+
+test("attention focus restoration is deterministic across queue mutations", () => {
+    const previousIds = ["a", "b", "c", "d", "e", "f"];
+    assert.deepEqual(
+        resolveAttentionFocus({
+            previousIds,
+            nextIds: ["x", "b", "c", "d", "e", "f"],
+            focusedId: "c",
+        }),
+        { kind: "item", id: "c", changed: false }
+    );
+    assert.deepEqual(
+        resolveAttentionFocus({
+            previousIds,
+            nextIds: ["a", "c", "d", "e", "f"],
+            focusedId: "b",
+        }),
+        { kind: "item", id: "c", changed: true }
+    );
+    assert.deepEqual(
+        resolveAttentionFocus({
+            previousIds,
+            nextIds: ["a", "b"],
+            focusedId: "c",
+        }),
+        { kind: "item", id: "b", changed: true }
+    );
+    assert.deepEqual(
+        resolveAttentionFocus({
+            previousIds,
+            nextIds: ["x", "a", "b", "c", "d", "e"],
+            focusedId: "f",
+        }),
+        { kind: "item", id: "e", changed: true }
+    );
+    assert.deepEqual(
+        resolveAttentionFocus({
+            previousIds: ["a"],
+            nextIds: [],
+            focusedId: "a",
+            hasOverflow: true,
+        }),
+        { kind: "overflow", changed: true }
+    );
+    assert.deepEqual(
+        resolveAttentionFocus({
+            previousIds: ["a"],
+            nextIds: [],
+            focusedId: "a",
+        }),
+        { kind: "heading", changed: true }
+    );
+    assert.deepEqual(
+        resolveAttentionFocus({
+            previousIds,
+            nextIds: previousIds,
+            focusedId: "",
+        }),
+        { kind: "none" }
+    );
 });
 
 test("model labels use conservative humanization and optional reasoning effort", () => {
@@ -1345,6 +1566,114 @@ test("protected reveal set includes only explicit targets and visual ancestry", 
             `${id} attention status should remain compactable`
         );
     }
+});
+
+test("attention targets reveal through synthetic ancestry and repository groups", () => {
+    const synthetic = normalizeConstellation(
+        [
+            {
+                id: "foreign",
+                name: "Foreign root",
+                projectId: "foreign-project",
+                projectName: "Foreign",
+                repository: "octo/foreign",
+                status: "idle",
+            },
+            {
+                id: "target",
+                parentId: "foreign",
+                name: "Target",
+                projectId: "project-a",
+                projectName: "Project A",
+                repository: "octo/a",
+                status: "completed",
+                updatedAt: "2026-09-25T23:59:00.000Z",
+            },
+        ],
+        "target",
+        { scope: "all", relationships: true, projects: true }
+    );
+    const project = filterConstellationView(synthetic, {
+        project: "Project A",
+    });
+    const target = project.nodes.find((node) => node.id === "target");
+    assert.equal(Boolean(target.syntheticParentId), true);
+    const protectedIds = buildProtectedRevealSet(project.nodes, {
+        rootId: project.rootId,
+        currentSessionId: project.currentSessionId,
+        revealedIds: ["target"],
+    });
+    assert.equal(protectedIds.has("target"), true);
+    assert.equal(protectedIds.has(target.syntheticParentId), true);
+    assert.equal(protectedIds.has(project.rootId), true);
+
+    const dense = scalableFixtureState(121, 8);
+    const layout = layoutResponsiveConstellation(dense, {
+        width: 320,
+        height: 700,
+        revealedIds: ["scale-42"],
+    });
+    assert.equal(layout.nodes.some((node) => node.id === "scale-42"), true);
+    assert.equal(
+        layout.edges.some(
+            (edge) =>
+                edge.source === "scale-root" &&
+                edge.target === "scale-42" &&
+                edge.kind === "parent-child"
+        ),
+        true
+    );
+    assert.equal(layout.protectedIds.includes("scale-42"), true);
+});
+
+test("recent completed and selected archived targets escape collapsed shelves", () => {
+    const source = normalizeConstellation(
+        [
+            {
+                id: "root",
+                name: "Root",
+                repository: "octo/root",
+                status: "idle",
+            },
+            {
+                id: "recent",
+                parentId: "root",
+                name: "Recent completion",
+                repository: "octo/root",
+                status: "completed",
+                updatedAt: "2026-09-25T23:59:00.000Z",
+            },
+            {
+                id: "old",
+                parentId: "root",
+                name: "Old completion",
+                repository: "octo/root",
+                status: "completed",
+                updatedAt: "2026-09-25T20:00:00.000Z",
+            },
+            {
+                id: "archived",
+                parentId: "root",
+                name: "Archived",
+                repository: "octo/root",
+                status: "archived",
+            },
+        ],
+        "root"
+    );
+    const layout = layoutResponsiveConstellation(source, {
+        width: 320,
+        height: 700,
+        revealedIds: ["recent"],
+        selectedId: "archived",
+    });
+    assert.equal(layout.nodes.some((node) => node.id === "recent"), true);
+    assert.equal(layout.nodes.some((node) => node.id === "archived"), true);
+    assert.equal(layout.nodes.some((node) => node.id === "old"), false);
+    assert.equal(
+        layout.nodes.find((node) => node.id === completedShelfId)?.shelfCount,
+        1
+    );
 });
 
 test("repository grouping has exact thresholds, boundaries, and deterministic ordering", () => {
@@ -2850,6 +3179,12 @@ test("loopback server rejects unsafe requests and cleans up idempotently", async
         assert.equal(layoutModule.status, 200);
         assert.match(await layoutModule.text(), /layoutResponsiveConstellation/);
 
+        const attentionModule = await fetch(`${first.url}attention.mjs`, {
+            headers: { cookie },
+        });
+        assert.equal(attentionModule.status, 200);
+        assert.match(await attentionModule.text(), /buildAttentionQueue/);
+
         const stateResponse = await fetch(`${first.url}state`, { headers: { cookie } });
         assert.equal(stateResponse.status, 200);
         const normalState = await stateResponse.json();
@@ -3160,7 +3495,7 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     assert.match(html, /function presentationFingerprint/);
     assert.match(
         html,
-        /if \(!presentationChanged\) \{\s*renderDiagnostics\(\);\s*return;/
+        /if \(!presentationChanged\) \{[\s\S]*if \(previousAttention !== nextAttentionFingerprint\) render\(\);[\s\S]*else renderAttention\(\);[\s\S]*renderDiagnostics\(\);[\s\S]*return;/
     );
     assert.match(html, /Query incompatible/);
     assert.match(html, /last known sanitized state remains visible/i);
@@ -3224,7 +3559,62 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     assert.match(html, /function toggleOverflowSummary\(node\)/);
     assert.match(html, /"aria-expanded": node\.isOverflowSummary/);
     assert.match(html, /id="fitWidth"/);
+    assert.match(html, /id="attentionRadar"/);
+    assert.match(html, /id="attentionList"/);
+    assert.match(html, /Nothing needs attention right now\./);
+    assert.match(html, /buildAttentionQueue/);
+    assert.match(html, /function activateAttentionItem/);
+    assert.match(html, /resetLocalNavigationForAttention/);
+    assert.match(html, /state\.focusSessionId = ""/);
+    assert.match(html, /state\.selectedId = item\.id/);
+    assert.match(html, /state\.revealedIds\.add\(item\.id\)/);
+    assert.match(html, /Session revealed and details opened\./);
+    assert.match(html, /item\.shapeLabel \+ " status/);
+    assert.match(html, /data-attention-id/);
+    assert.match(html, /focus\(\{ preventScroll: true \}\)/);
+    assert.match(html, /focusNode\(item\.id, \{ smooth: true \}\)/);
+    assert.match(html, /programmaticScrollBehavior\(\{/);
+    assert.match(html, /openInspector\(sourceNode, false\)/);
+    assert.match(html, /closeDiagnostics\(\{ restoreFocus: false \}\)/);
+    assert.match(html, /Last meaningful activity/);
+    assert.match(html, /attentionItem\?\.kind === "inactive-busy"/);
     assert.doesNotMatch(html, />Fit</);
+});
+
+test("renderer restores attention focus with roving keyboard navigation", () => {
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+        scopeUrl: "http://127.0.0.1/scope",
+    });
+    assert.match(html, /id="attentionHeading"/);
+    assert.match(
+        html,
+        /button class="attention-overflow" id="attentionOverflow" type="button"/
+    );
+    assert.match(html, /resolveAttentionFocus\(\{/);
+    assert.match(html, /previousIds,/);
+    assert.match(html, /nextIds: queue\.targetIds/);
+    assert.match(html, /hasOverflow: queue\.overflowCount > 0/);
+    assert.match(html, /attentionRovingId: null/);
+    assert.match(
+        html,
+        /button\.tabIndex = item\.id === state\.attentionRovingId \? 0 : -1/
+    );
+    assert.match(html, /event\.key === "ArrowRight" \|\| event\.key === "ArrowDown"/);
+    assert.match(html, /event\.key === "ArrowLeft" \|\| event\.key === "ArrowUp"/);
+    assert.match(html, /event\.key === "Home"/);
+    assert.match(html, /event\.key === "End"/);
+    assert.match(html, /button\.addEventListener\("click", \(\) => activateAttentionItem\(item\)\)/);
+    assert.match(html, /focusResolution\.kind === "item"/);
+    assert.match(html, /focusResolution\.kind === "overflow"/);
+    assert.match(html, /focusResolution\.kind === "heading"/);
+    assert.match(html, /focusTarget\?\.focus\(\{ preventScroll: true \}\)/);
+    assert.match(html, /Attention queue updated\. Focus moved to/);
+    assert.match(html, /Attention queue is empty\. Focus moved to the Needs attention summary\./);
+    assert.match(html, /overflowFocused && queue\.overflowCount === 0/);
+    assert.match(html, /elements\.attentionHeading\.focus\(\{ preventScroll: true \}\)/);
 });
 
 test("renderer uses redundant status symbols in the legend, cards, and inspector", () => {
@@ -3368,6 +3758,11 @@ test("renderer keeps chrome, filters, status context, and inspector usable when 
     assert.match(html, /@media \(max-width: 360px\)/);
     assert.match(html, /grid-template-columns: minmax\(0, 1fr\) auto/);
     assert.match(html, /\.status-strip[\s\S]*overflow-x: auto/);
+    assert.match(html, /\.attention-panel[\s\S]*max-height: 176px/);
+    assert.match(html, /\.attention-list[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+    assert.match(html, /window\.matchMedia\("\(max-width: 480px\)"\)\.matches/);
+    assert.match(html, /elements\.attentionRadar\.open = false/);
+    assert.match(html, /\.attention-radar\[open\] \.attention-caret/);
     assert.match(
         html,
         /\.inspector, \.diagnostics \{ max-height: min\(48vh, 320px\); \}/

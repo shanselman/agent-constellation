@@ -11,6 +11,10 @@ import { resolveProjectFilter } from "./layout.mjs";
 import { renderConstellationHtml } from "./renderer.mjs";
 
 const layoutModule = readFileSync(new URL("./layout.mjs", import.meta.url), "utf8");
+const attentionModule = readFileSync(
+    new URL("./attention.mjs", import.meta.url),
+    "utf8"
+);
 
 class RequestError extends Error {
     constructor(status, message) {
@@ -333,6 +337,17 @@ export async function startConstellationServer({
                     "x-content-type-options": "nosniff",
                 });
                 response.end(layoutModule);
+                return;
+            }
+
+            if (request.method === "GET" && url.pathname === "/attention.mjs") {
+                requirePageSession(request, entry);
+                response.writeHead(200, {
+                    "content-type": "text/javascript; charset=utf-8",
+                    "cache-control": "no-store",
+                    "x-content-type-options": "nosniff",
+                });
+                response.end(attentionModule);
                 return;
             }
 

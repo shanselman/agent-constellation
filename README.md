@@ -45,6 +45,21 @@ The status strip, cards, and inspector reuse the same semantics: busy is a fille
 
 Completed and archived descendants collapse into separate **Completed** and **Archived** shelves so a large constellation remains readable. Sessions needing attention sort first, followed by busy work, idle work, and the two shelves. Expand either shelf when you need to inspect finished or historical work.
 
+### Primary needs-attention surface
+
+A compact **Needs attention** queue sits above the constellation as the primary operational surface. It prioritizes, in order:
+
+1. Waiting for user input
+2. Waiting for plan approval
+3. Blocked permission decisions
+4. Failed sessions
+5. Busy sessions with no meaningful activity for at least 45 minutes
+6. Sessions completed in the last 10 minutes
+
+The thresholds and ordering live in one shared deterministic contract. Inactivity is measured from the most recent meaningful operational event—not from total busy duration—so a long-running session that is still making progress is not mislabeled as stale. Every item includes visible text and a redundant status shape; color is never the only signal.
+
+The queue shows at most six prioritized sessions and summarizes overflow instead of growing one chip per session. At 480 pixels and below it starts collapsed as a bounded summary and expands into a short, vertically scrollable list. Selecting an item clears only local display filters/focus, reveals the existing session through `syntheticParentId || parentId`, keeps it out of repository summaries and completed/archived shelves as needed, moves keyboard focus to its existing card, scrolls it into view, and opens the inspector. It never performs a session action.
+
 ### Search, lineage focus, and repository groups
 
 Search uses normalized token matching across sanitized session names, projects, repositories, branches, pull requests, issues, tasks, providers, models, reasoning effort, and statuses. It never searches prompts, messages, tool arguments, file contents, or secrets. Search results retain their visual ancestry through `syntheticParentId || parentId`, so a matching session is never shown without its available lineage context.
@@ -209,6 +224,7 @@ For an explicit local-model UI demonstration:
 - **Search** opens sanitized metadata search; `/` is its explicit keyboard shortcut.
 - **Filter** narrows by status, project, or repository.
 - **Show all** resets local search, focus, and filters without widening a server-enforced project scope.
+- **Needs attention** expands or collapses the bounded operational queue; choose an item to reveal its existing card and open sanitized details.
 - **Click or press Enter/Space** on a session to open its inspector.
 - **Arrow keys** move focus directionally between session cards.
 - **Page Up / Page Down** move to the visual parent or first visible child.
@@ -238,11 +254,12 @@ The installable extension lives entirely in [`.github/extensions/agent-constella
 | File | Responsibility |
 |---|---|
 | `extension.mjs` | Declares the canvas, open schema, actions, and lifecycle with the Copilot SDK. |
+| `attention.mjs` | Defines deterministic attention priorities, the 45-minute meaningful-inactivity threshold, the 10-minute recent-completion window, stable ordering, sanitization, and bounded overflow summaries. |
 | `data.mjs` | Reads local sources, validates query capability, derives statuses and relationships, sanitizes project/session metadata, normalizes the unified diagnostics/provenance schema, filters state, and isolates demo decoration. |
-| `layout.mjs` | Produces deterministic search/focus visibility, explicit-target ancestry protection, direct-sibling repository groups, hard-budget overflow pages, bounded-stack/horizontal layouts, density-aware orientation, attention-first ordering, completed/archived shelves, shared card-marker slots, meaningful-change summaries, explicit synthetic containment, model labels, fit scaling, and pinch transforms. |
-| `renderer.mjs` | Generates the accessible, right-pane-first, theme-aware canvas UI with a shared-marker trust affordance, unified diagnostics panel, persistent repository/overflow expansion, hidden-target reveal, roving keyboard focus, search/focus reset controls, and per-view scope/project/repository controls. |
-| `server.mjs` | Hosts the token-protected loopback page, JSON state, per-instance scope endpoint, refresh endpoint, SSE stream, and last-good refresh retention. |
-| `agent-constellation.test.mjs` | Covers multi-project collection, source capability, provenance, sanitization, refresh fail/recover behavior, no-publish churn, real/synthetic relationships, scope isolation, responsive layout, hard-budget compaction, marker slots, local-model semantics, renderer accessibility, and loopback protections. |
+| `layout.mjs` | Produces deterministic search/focus visibility, explicit attention/selection target ancestry protection, direct-sibling repository groups, hard-budget overflow pages, bounded-stack/horizontal layouts, density-aware orientation, attention-first ordering, completed/archived shelves, shared card-marker slots, meaningful-change summaries, explicit synthetic containment, model labels, fit scaling, and pinch transforms. |
+| `renderer.mjs` | Generates the accessible, right-pane-first, theme-aware canvas UI with the bounded needs-attention queue, shared-marker trust affordance, unified diagnostics panel, persistent repository/overflow expansion, hidden-target reveal, roving keyboard focus, search/focus reset controls, and per-view scope/project/repository controls. |
+| `server.mjs` | Hosts the token-protected loopback page and browser modules, JSON state, per-instance scope endpoint, refresh endpoint, SSE stream, and last-good refresh retention. |
+| `agent-constellation.test.mjs` | Covers attention thresholds/ordering/focus/overflow/reveal, multi-project collection, source capability, provenance, sanitization, refresh fail/recover behavior, no-publish churn, real/synthetic relationships, scope isolation, responsive layout, hard-budget compaction, marker slots, local-model semantics, renderer accessibility, and loopback protections. |
 | `copilot-extension.json` | Identifies the folder as a shareable/installable Copilot extension. |
 
 ### Local data sources
@@ -261,6 +278,7 @@ The extension tolerates missing databases and event files. Missing optional tabl
 - The default remains the current session's accessible ancestor/descendant tree. Unrelated sessions appear only when `scope: "all"` is explicitly requested or selected in that canvas.
 - Synthetic all-sessions containment communicates display grouping only; it cannot recover lineage missing from local relationship metadata.
 - Project and relationship metadata can be partial for older or evolving app schemas. Diagnostics identify those limitations rather than guessing.
+- Meaningful-inactivity timing depends on the bounded local operational events and safe metadata currently available. Missing timing metadata omits the inactivity signal rather than guessing from total busy duration.
 - Copilot's local app data schema can evolve. The collector uses guarded reads and fallbacks, but a future schema change may temporarily reduce available metadata.
 - Statuses are inferred from local app state and recent event metadata; unavailable sources reduce precision.
 - Repository filters are additive display filtering, not an authorization boundary or server-enforced repository scope.

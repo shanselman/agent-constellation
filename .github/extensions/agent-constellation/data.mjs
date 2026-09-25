@@ -301,6 +301,7 @@ function readEventTail(sessionStateRoot, sessionId, maxBytes = 768_000) {
         latestTaskCompleteAt: 0,
         latestErrorAt: 0,
         latestUserMessageAt: 0,
+        lastMeaningfulActivityAt: 0,
         outstandingAskUser: false,
         outstandingPermission: false,
         available: false,
@@ -335,35 +336,71 @@ function readEventTail(sessionStateRoot, sessionId, maxBytes = 768_000) {
             switch (event.type) {
                 case "assistant.turn_start":
                     result.latestTurnStartAt = Math.max(result.latestTurnStartAt, timestamp);
+                    result.lastMeaningfulActivityAt = Math.max(
+                        result.lastMeaningfulActivityAt,
+                        timestamp
+                    );
                     break;
                 case "assistant.turn_end":
                     result.latestTurnEndAt = Math.max(result.latestTurnEndAt, timestamp);
+                    result.lastMeaningfulActivityAt = Math.max(
+                        result.lastMeaningfulActivityAt,
+                        timestamp
+                    );
                     break;
                 case "session.task_complete":
                     result.latestTaskCompleteAt = Math.max(result.latestTaskCompleteAt, timestamp);
+                    result.lastMeaningfulActivityAt = Math.max(
+                        result.lastMeaningfulActivityAt,
+                        timestamp
+                    );
                     break;
                 case "session.error":
                     result.latestErrorAt = Math.max(result.latestErrorAt, timestamp);
+                    result.lastMeaningfulActivityAt = Math.max(
+                        result.lastMeaningfulActivityAt,
+                        timestamp
+                    );
                     break;
                 case "user.message":
                     result.latestUserMessageAt = Math.max(result.latestUserMessageAt, timestamp);
+                    result.lastMeaningfulActivityAt = Math.max(
+                        result.lastMeaningfulActivityAt,
+                        timestamp
+                    );
                     break;
                 case "tool.execution_start": {
                     const callId = sanitizeText(event.data?.toolCallId, 160);
                     const toolName = sanitizeText(event.data?.toolName, 80);
                     if (callId && toolName) pendingTools.set(callId, toolName);
+                    result.lastMeaningfulActivityAt = Math.max(
+                        result.lastMeaningfulActivityAt,
+                        timestamp
+                    );
                     break;
                 }
                 case "tool.execution_complete": {
                     const callId = sanitizeText(event.data?.toolCallId, 160);
                     if (callId) pendingTools.delete(callId);
+                    result.lastMeaningfulActivityAt = Math.max(
+                        result.lastMeaningfulActivityAt,
+                        timestamp
+                    );
                     break;
                 }
                 case "permission.requested":
                     latestPermissionRequestAt = Math.max(latestPermissionRequestAt, timestamp);
+                    result.lastMeaningfulActivityAt = Math.max(
+                        result.lastMeaningfulActivityAt,
+                        timestamp
+                    );
                     break;
                 case "permission.completed":
                     latestPermissionCompleteAt = Math.max(latestPermissionCompleteAt, timestamp);
+                    result.lastMeaningfulActivityAt = Math.max(
+                        result.lastMeaningfulActivityAt,
+                        timestamp
+                    );
                     break;
             }
         }
@@ -800,8 +837,13 @@ function buildRawNodes(rows, store, sessionStateRoot) {
             reasoningEffort: sanitizeText(sessionRow.reasoning_effort, 30) || undefined,
             createdAt: isoTimestamp(sessionRow.created_at || storeRow?.created_at),
             updatedAt: isoTimestamp(
-                events.lastActivityAt
-                    ? new Date(events.lastActivityAt).toISOString()
+                events.lastMeaningfulActivityAt
+                    ? new Date(events.lastMeaningfulActivityAt).toISOString()
+                    : sessionRow.updated_at || storeRow?.updated_at
+            ),
+            lastActivityAt: isoTimestamp(
+                events.lastMeaningfulActivityAt
+                    ? new Date(events.lastMeaningfulActivityAt).toISOString()
                     : sessionRow.updated_at || storeRow?.updated_at
             ),
             provenance: {
@@ -849,7 +891,14 @@ function fallbackRoot(currentSessionId, store, sessionStateRoot) {
         branch,
         createdAt: isoTimestamp(row?.created_at),
         updatedAt: isoTimestamp(
-            events.lastActivityAt ? new Date(events.lastActivityAt).toISOString() : row?.updated_at
+            events.lastMeaningfulActivityAt
+                ? new Date(events.lastMeaningfulActivityAt).toISOString()
+                : row?.updated_at
+        ),
+        lastActivityAt: isoTimestamp(
+            events.lastMeaningfulActivityAt
+                ? new Date(events.lastMeaningfulActivityAt).toISOString()
+                : row?.updated_at
         ),
         status: "idle",
         provenance: {
@@ -1051,6 +1100,7 @@ export function normalizeConstellation(rawNodes, currentSessionId, metadata = {}
             issue: sanitizeText(input.issue, 180) || undefined,
             createdAt: isoTimestamp(input.createdAt),
             updatedAt: isoTimestamp(input.updatedAt),
+            lastActivityAt: isoTimestamp(input.lastActivityAt || input.updatedAt),
             busySince: isoTimestamp(input.busySince),
             humanGate: input.humanGate
                 ? {
@@ -1316,6 +1366,7 @@ export function stateFingerprint(state) {
             demoLocalModel: node.demoLocalModel,
             status: node.status,
             busySince: node.busySince,
+            lastActivityAt: node.lastActivityAt,
             updatedAt: node.updatedAt,
             gate: node.humanGate?.type,
             task: node.task,
