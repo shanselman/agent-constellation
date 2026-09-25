@@ -32,6 +32,12 @@ After changing extension code:
 5. Exercise keyboard navigation, pan, wheel zoom, pinch zoom, filters, the inspector, and the completed shelf as applicable.
 6. Run `npm run check`.
 
+## Cafeteria-style experiments
+
+Treat the project extension on `main` as the shared behavioral foundation. Explore independent ideas in separate branches, worktrees, and pull requests so contributors can evaluate or combine experiments without coupling unrelated changes.
+
+Keep each experiment narrowly scoped, describe the behavior it is testing, and preserve the foundation's zero-runtime-dependency, read-only data, sanitization, loopback-only hosting, and accessibility guarantees. Before publishing an experiment, run `npm run check` and document any manual canvas validation that applies.
+
 ## Pull requests
 
 Describe the user-visible problem, the chosen fix, privacy or compatibility implications, and the validation performed. Screenshots are useful for visual changes.
