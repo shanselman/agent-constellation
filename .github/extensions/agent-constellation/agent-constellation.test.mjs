@@ -288,6 +288,22 @@ test("operational briefing has stable priority, ties, and exact mixed-status out
             "repository:octo/core",
         ]
     );
+    assert.equal(
+        briefing.sections[2].summary,
+        "1 session has an unrecovered local failure signal."
+    );
+    assert.equal(
+        briefing.sections[3].summary,
+        "1 session reports an outstanding permission decision."
+    );
+    assert.equal(
+        briefing.sections[5].summary,
+        "3 repositories represented in the visible local state."
+    );
+    assert.equal(
+        briefing.sections[6].items.find((item) => item.key === "long-running").detail,
+        "1 busy session has run for at least 2 hours."
+    );
 
     const normalized = fixtureState();
     const laterBriefingTimestamp = structuredClone(normalized);

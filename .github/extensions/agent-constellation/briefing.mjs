@@ -135,7 +135,7 @@ function repositorySection(nodes) {
         "repository-spread",
         count,
         count
-            ? `${plural(count, "repository")} represented in the visible local state.`
+            ? `${plural(count, "repository", "repositories")} represented in the visible local state.`
             : "No repository metadata is visible.",
         items
     );
@@ -182,21 +182,21 @@ function bottleneckSection(nodes, now) {
         items.push({
             key: "blocked-work",
             label: "Blocked work",
-            detail: `${plural(blocked.length, "session")} report a permission decision as outstanding.`,
+            detail: `${plural(blocked.length, "session")} ${blocked.length === 1 ? "reports" : "report"} a permission decision as outstanding.`,
         });
     }
     if (failed.length) {
         items.push({
             key: "failed-work",
             label: "Failed work",
-            detail: `${plural(failed.length, "session")} have an unrecovered local failure signal.`,
+            detail: `${plural(failed.length, "session")} ${failed.length === 1 ? "has" : "have"} an unrecovered local failure signal.`,
         });
     }
     if (longRunning.length) {
         items.push({
             key: "long-running",
             label: "Long-running work",
-            detail: `${plural(longRunning.length, "busy session")} have run for at least 2 hours.`,
+            detail: `${plural(longRunning.length, "busy session")} ${longRunning.length === 1 ? "has" : "have"} run for at least 2 hours.`,
         });
     }
     for (const [repository, count] of concentrated) {
@@ -269,7 +269,7 @@ export function buildOperationalBriefing(
             "failures",
             failures.length,
             failures.length
-                ? `${plural(failures.length, "session")} have an unrecovered local failure signal.`
+                ? `${plural(failures.length, "session")} ${failures.length === 1 ? "has" : "have"} an unrecovered local failure signal.`
                 : "No unrecovered local failure signal is visible.",
             failures.map((node) => sessionItem(node, node.repository))
         ),
@@ -277,7 +277,7 @@ export function buildOperationalBriefing(
             "blocked-sessions",
             blocked.length,
             blocked.length
-                ? `${plural(blocked.length, "session")} report an outstanding permission decision.`
+                ? `${plural(blocked.length, "session")} ${blocked.length === 1 ? "reports" : "report"} an outstanding permission decision.`
                 : "No session reports an outstanding permission decision.",
             blocked.map((node) =>
                 sessionItem(node, `${node.repository} · ${node.humanGate || "Permission decision required"}`)
