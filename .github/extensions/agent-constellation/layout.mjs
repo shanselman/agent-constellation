@@ -264,7 +264,7 @@ export function layoutResponsiveConstellation(
         completedExpanded = false,
     } = {}
 ) {
-    const stageWidth = Math.max(320, Number(width) || 960);
+    const stageWidth = Math.max(280, Number(width) || 960);
     const stageHeight = Math.max(320, Number(height) || 600);
     const { visible, completedCount } = visibleTree(
         state.nodes ?? [],

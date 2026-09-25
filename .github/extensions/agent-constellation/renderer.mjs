@@ -12,27 +12,37 @@ export function renderConstellationHtml(config) {
       --canvas-bg: var(--background-color-default, #0d1117);
       --panel-bg: color-mix(in srgb, var(--background-color-default, #0d1117) 94%, var(--text-color-default, #f0f6fc) 6%);
       --card-bg: color-mix(in srgb, var(--background-color-default, #0d1117) 86%, var(--text-color-default, #f0f6fc) 14%);
+      --card-shadow: rgb(1 4 9 / .22);
       --text: var(--text-color-default, #f0f6fc);
       --muted: var(--text-color-muted, #8b949e);
       --border: var(--border-color-default, #30363d);
       --focus: var(--color-focus-outline, #58a6ff);
       --busy: var(--true-color-blue, #2f81f7);
+      --busy-muted: var(--true-color-blue-muted, color-mix(in srgb, var(--busy) 18%, transparent));
       --idle: var(--text-color-muted, #8b949e);
-      --complete: #3fb950;
+      --complete: var(--true-color-green, #3fb950);
       --local-model: color-mix(in srgb, var(--complete) 86%, var(--text) 14%);
-      --waiting: #d29922;
-      --plan: #a371f7;
-      --blocked: #db6d28;
+      --waiting: var(--true-color-yellow, #d29922);
+      --plan: var(--true-color-purple, #a371f7);
+      --blocked: var(--true-color-orange, #db6d28);
       --failed: var(--true-color-red, #f85149);
-      --archived: #6e7681;
+      --archived: var(--text-color-muted, #6e7681);
       font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
       font-size: var(--text-body-medium, 14px);
       line-height: var(--leading-body-medium, 20px);
     }
+    :where(html, body)[data-color-mode="light"] {
+      --panel-bg: color-mix(in srgb, var(--background-color-default, #fff) 95%, var(--text-color-default, #1f2328) 5%);
+      --card-bg: color-mix(in srgb, var(--background-color-default, #fff) 98%, var(--text-color-default, #1f2328) 2%);
+      --card-shadow: rgb(31 35 40 / .12);
+    }
+    :where(html, body)[data-color-mode="dark"] {
+      --card-shadow: rgb(1 4 9 / .28);
+    }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      min-width: 320px;
+      min-width: 280px;
       height: 100vh;
       overflow: hidden;
       background: var(--canvas-bg);
@@ -47,7 +57,7 @@ export function renderConstellationHtml(config) {
     }
     button { cursor: pointer; min-height: 30px; padding: 4px 8px; }
     button:hover { border-color: var(--muted); }
-    button:focus-visible, select:focus-visible, .node:focus-visible {
+    button:focus-visible, select:focus-visible {
       outline: 2px solid var(--focus);
       outline-offset: 2px;
     }
@@ -93,7 +103,8 @@ export function renderConstellationHtml(config) {
       align-items: center;
       gap: 4px;
       min-width: 0;
-      overflow: hidden;
+      overflow-x: auto;
+      scrollbar-width: thin;
     }
     .status-strip button {
       display: inline-flex;
@@ -106,7 +117,45 @@ export function renderConstellationHtml(config) {
       white-space: nowrap;
     }
     .status-strip button.active { border-color: var(--status-color); color: var(--text); }
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--status-color); flex: none; }
+    .status-glyph {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      flex: none;
+      background: var(--status-color);
+      border: 1px solid var(--status-color);
+    }
+    .status-busy .status-glyph { border-radius: 50%; }
+    .status-idle .status-glyph {
+      border-width: 2px;
+      border-radius: 50%;
+      background: transparent;
+    }
+    .status-completed .status-glyph {
+      width: 9px;
+      height: 6px;
+      border-width: 0 0 2px 2px;
+      background: transparent;
+      transform: rotate(-45deg) translateY(-1px);
+    }
+    .status-waiting-user .status-glyph {
+      border-radius: 2px;
+      transform: rotate(45deg) scale(.82);
+    }
+    .status-waiting-plan .status-glyph {
+      border-radius: 50% 50% 50% 1px;
+      transform: rotate(-45deg);
+    }
+    .status-blocked .status-glyph {
+      clip-path: polygon(25% 0, 75% 0, 100% 25%, 100% 75%, 75% 100%, 25% 100%, 0 75%, 0 25%);
+    }
+    .status-failed .status-glyph {
+      clip-path: polygon(18% 0, 50% 32%, 82% 0, 100% 18%, 68% 50%, 100% 82%, 82% 100%, 50% 68%, 18% 100%, 0 82%, 32% 50%, 0 18%);
+    }
+    .status-archived .status-glyph {
+      background: repeating-linear-gradient(135deg, var(--status-color) 0 2px, transparent 2px 4px);
+      border-radius: 1px;
+    }
     .toolbar { display: flex; align-items: center; gap: 4px; margin-left: auto; }
     .toolbar button { min-width: 30px; }
     .toolbar .text-control { min-width: auto; }
@@ -145,7 +194,7 @@ export function renderConstellationHtml(config) {
       overscroll-behavior: contain;
       scrollbar-gutter: stable;
       background:
-        radial-gradient(circle at 16% 12%, color-mix(in srgb, var(--busy) 7%, transparent), transparent 34%),
+        radial-gradient(circle at 16% 12%, var(--busy-muted), transparent 34%),
         radial-gradient(circle at 82% 72%, color-mix(in srgb, var(--plan) 6%, transparent), transparent 38%),
         var(--canvas-bg);
     }
@@ -185,10 +234,20 @@ export function renderConstellationHtml(config) {
       stroke: var(--status-color);
       stroke-width: 2;
       vector-effect: non-scaling-stroke;
-      filter: drop-shadow(0 3px 8px rgb(0 0 0 / .18));
+      filter: drop-shadow(0 3px 8px var(--card-shadow));
     }
     .node:hover .node-card, .node.selected .node-card { stroke-width: 3; }
     .node.root .node-card { stroke-width: 3; }
+    .node-focus-ring {
+      fill: none;
+      stroke: var(--focus);
+      stroke-width: 3;
+      opacity: 0;
+      vector-effect: non-scaling-stroke;
+      pointer-events: none;
+    }
+    .node:focus-visible { outline: none; }
+    .node:focus-visible .node-focus-ring { opacity: 1; }
     .node.current .node-card {
       stroke-dasharray: 5 3;
       filter: drop-shadow(0 0 8px color-mix(in srgb, var(--focus) 45%, transparent));
@@ -201,12 +260,30 @@ export function renderConstellationHtml(config) {
       stroke-width: 3;
       animation: attention 2.2s ease-in-out infinite;
     }
+    .node-status-marker .marker-fill { fill: var(--status-color); }
+    .node-status-marker .marker-outline {
+      fill: var(--card-bg);
+      stroke: var(--status-color);
+      stroke-width: 2;
+      vector-effect: non-scaling-stroke;
+    }
+    .node-status-marker .marker-line {
+      fill: none;
+      stroke: var(--color-white, #fff);
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      vector-effect: non-scaling-stroke;
+    }
+    .node-status-marker.status-idle .marker-line {
+      stroke: var(--status-color);
+    }
     @keyframes pulse {
       0% { r: 36px; opacity: .5; }
       75%, 100% { r: 56px; opacity: 0; }
     }
     @keyframes attention {
-      0%, 100% { filter: drop-shadow(0 3px 8px rgb(0 0 0 / .18)); }
+      0%, 100% { filter: drop-shadow(0 3px 8px var(--card-shadow)); }
       50% { filter: drop-shadow(0 0 10px color-mix(in srgb, var(--waiting) 55%, transparent)); }
     }
     .node-name { fill: var(--text); font-weight: var(--font-weight-semibold, 600); font-size: 12px; }
@@ -314,6 +391,28 @@ export function renderConstellationHtml(config) {
       dl { grid-template-columns: 1fr; gap: 1px; }
       dd { margin-bottom: 4px; }
     }
+    @media (max-width: 440px) {
+      .chrome {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 4px 6px;
+        padding: 6px;
+      }
+      .brand { grid-column: 1; }
+      .brand h1 { font-size: 14px; }
+      .summary { display: none; }
+      .toolbar { grid-column: 2; }
+      .toolbar button { min-width: 28px; padding-inline: 6px; }
+      .status-strip {
+        grid-column: 1 / -1;
+        order: initial;
+        width: 100%;
+        padding-bottom: 2px;
+      }
+      .status-strip button { flex: none; min-height: 24px; }
+      .filters { padding: 6px; }
+      .inspector { max-height: min(46vh, 300px); padding-inline: 8px; }
+    }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
         animation-duration: .001ms !important;
@@ -322,6 +421,37 @@ export function renderConstellationHtml(config) {
         transition-duration: .001ms !important;
       }
       .edge.working { stroke-dasharray: none; }
+      .node-halo { display: none; }
+    }
+    @media (forced-colors: active) {
+      body, .chrome, .filters, .inspector, .inspector-head, .stage {
+        background: Canvas;
+        color: CanvasText;
+      }
+      button, select { border-color: ButtonBorder; background: Canvas; color: CanvasText; }
+      button:focus-visible, select:focus-visible { outline-color: Highlight; }
+      .edge, .edge.working, .edge.attention, .edge.shelf { stroke: CanvasText; }
+      .node-card {
+        fill: Canvas;
+        stroke: CanvasText;
+        filter: none;
+      }
+      .node.selected .node-card { stroke: Highlight; }
+      .node-focus-ring { stroke: Highlight; }
+      .node-status-marker .marker-fill { fill: CanvasText; }
+      .node-status-marker .marker-outline { fill: Canvas; stroke: CanvasText; }
+      .node-status-marker .marker-line { stroke: Canvas; }
+      .node-status-marker.status-idle .marker-line { stroke: CanvasText; }
+      .node-name, .node-repo, .node-model, .node-status,
+      .current-marker-text { fill: CanvasText; }
+      .current-marker { fill: Highlight; }
+      .status-glyph {
+        background: CanvasText;
+        border-color: CanvasText;
+        color: CanvasText;
+        forced-color-adjust: none;
+      }
+      .status-idle .status-glyph, .status-completed .status-glyph { background: transparent; }
     }
   </style>
 </head>
@@ -370,7 +500,7 @@ export function renderConstellationHtml(config) {
       <section class="inspector" id="inspector" aria-label="Selected session details" aria-hidden="true">
         <div class="inspector-head">
           <h2 id="detailName">Session details</h2>
-          <div class="detail-status status-idle" id="detailStatus"><span class="dot"></span><span></span></div>
+          <div class="detail-status status-idle" id="detailStatus"><span class="status-glyph" aria-hidden="true"></span><span></span></div>
           <button class="inspector-close" id="inspectorClose" type="button" aria-label="Close session details">×</button>
         </div>
         <dl id="details"></dl>
@@ -455,6 +585,54 @@ export function renderConstellationHtml(config) {
       return leaf;
     }
 
+    function nodeStatusMarker(status, attributes = {}) {
+      const marker = svgElement("g", {
+        class: "node-status-marker status-" + status,
+        "aria-hidden": "true",
+        ...attributes
+      });
+      const shape = (name, shapeAttributes) => marker.appendChild(
+        svgElement(name, shapeAttributes)
+      );
+      if (status === "idle") {
+        shape("circle", { class: "marker-outline", cx: 0, cy: 0, r: 6 });
+        shape("path", { class: "marker-line", d: "M -2 0 H 2" });
+      } else if (status === "completed") {
+        shape("circle", { class: "marker-fill", cx: 0, cy: 0, r: 6 });
+        shape("path", { class: "marker-line", d: "M -3 0 L -1 2.3 L 3.5 -2.5" });
+      } else if (status === "waiting-user") {
+        shape("rect", {
+          class: "marker-fill",
+          x: -5,
+          y: -5,
+          width: 10,
+          height: 10,
+          rx: 1.5,
+          transform: "rotate(45)"
+        });
+        shape("path", { class: "marker-line", d: "M 0 -3 V 1 M 0 3.3 V 3.5" });
+      } else if (status === "waiting-plan") {
+        shape("circle", { class: "marker-fill", cx: 0, cy: 0, r: 6 });
+        shape("path", { class: "marker-line", d: "M 0 -3 V 0 L 2.7 1.7" });
+      } else if (status === "blocked") {
+        shape("path", {
+          class: "marker-fill",
+          d: "M -3.5 -6 H 3.5 L 6 -3.5 V 3.5 L 3.5 6 H -3.5 L -6 3.5 V -3.5 Z"
+        });
+        shape("path", { class: "marker-line", d: "M -2.5 2.5 L 2.5 -2.5" });
+      } else if (status === "failed") {
+        shape("circle", { class: "marker-fill", cx: 0, cy: 0, r: 6 });
+        shape("path", { class: "marker-line", d: "M -2.4 -2.4 L 2.4 2.4 M 2.4 -2.4 L -2.4 2.4" });
+      } else if (status === "archived") {
+        shape("rect", { class: "marker-fill", x: -6, y: -5, width: 12, height: 10, rx: 1 });
+        shape("path", { class: "marker-line", d: "M -3 -1 H 3 M 0 -1 V 2" });
+      } else {
+        shape("circle", { class: "marker-fill", cx: 0, cy: 0, r: 6 });
+        shape("circle", { class: "marker-line", cx: 0, cy: 0, r: 2 });
+      }
+      return marker;
+    }
+
     function elapsed(iso) {
       const start = Date.parse(iso || "");
       if (!Number.isFinite(start)) return "";
@@ -506,7 +684,7 @@ export function renderConstellationHtml(config) {
     function stageSize() {
       const rect = elements.stage.getBoundingClientRect();
       return {
-        width: Math.max(320, rect.width),
+        width: Math.max(280, rect.width),
         height: Math.max(320, rect.height)
       };
     }
@@ -648,11 +826,13 @@ export function renderConstellationHtml(config) {
         button.type = "button";
         button.className = "status-" + status + (state.status === status ? " active" : "");
         button.title = "Filter to " + statusLabels[status];
-        const dot = document.createElement("span");
-        dot.className = "dot";
+        button.setAttribute("aria-pressed", state.status === status ? "true" : "false");
+        const glyph = document.createElement("span");
+        glyph.className = "status-glyph";
+        glyph.setAttribute("aria-hidden", "true");
         const label = document.createElement("span");
         label.textContent = statusLabels[status] + " " + count;
-        button.append(dot, label);
+        button.append(glyph, label);
         button.addEventListener("click", () => {
           state.status = state.status === status ? "" : status;
           if (state.status === "completed") state.completedExpanded = true;
@@ -747,6 +927,14 @@ export function renderConstellationHtml(config) {
           cx: 0,
           cy: 0
         });
+        const focusRing = svgElement("rect", {
+          class: "node-focus-ring",
+          x: -width / 2 - 4,
+          y: -height / 2 - 4,
+          width: width + 8,
+          height: height + 8,
+          rx: 14
+        });
         const card = svgElement("rect", {
           class: "node-card",
           x: -width / 2,
@@ -780,7 +968,10 @@ export function renderConstellationHtml(config) {
         status.textContent = node.isShelf
           ? (state.completedExpanded ? "Collapse shelf" : "Expand shelf")
           : statusText(node);
-        group.append(halo, card, name, repo);
+        const statusMarker = nodeStatusMarker(node.status, {
+          transform: "translate(" + (-width / 2 + 15) + " " + (-height / 2 + 15) + ")"
+        });
+        group.append(halo, focusRing, card, statusMarker, name, repo);
         if (hasModelLabel) {
           const displayedModelLabel = modelLabel.length > 34
             ? modelLabel.slice(0, 33) + "…"

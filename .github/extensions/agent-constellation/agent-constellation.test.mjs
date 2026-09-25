@@ -405,6 +405,7 @@ test("responsive layout uses vertical mission-control columns and collapses comp
     );
 
     for (const [width, height] of [
+        [280, 700],
         [420, 900],
         [700, 1100],
     ]) {
@@ -786,7 +787,6 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
         refreshUrl: "http://127.0.0.1/refresh",
     });
     assert.match(html, /aria-live="polite"/);
-    assert.match(html, /prefers-reduced-motion/);
     assert.match(html, /role="tree"/);
     assert.match(html, /Mission status counts/);
     assert.match(html, /CURRENT/);
@@ -812,4 +812,82 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     assert.match(html, /completedExpanded/);
     assert.match(html, /id="fitWidth"/);
     assert.doesNotMatch(html, />Fit</);
+});
+
+test("renderer contract includes redundant semantic status markers", () => {
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+    });
+    assert.match(html, /function nodeStatusMarker\(status/);
+    assert.match(html, /class: "node-status-marker status-" \+ status/);
+    assert.match(html, /className = "status-glyph"/);
+    assert.match(html, /button\.setAttribute\("aria-pressed"/);
+    for (const status of [
+        "busy",
+        "idle",
+        "completed",
+        "waiting-user",
+        "waiting-plan",
+        "blocked",
+        "failed",
+        "archived",
+    ]) {
+        assert.match(html, new RegExp(`status-${status.replace("-", "\\-")}`));
+    }
+});
+
+test("renderer contract keeps keyboard focus visible inside the SVG tree", () => {
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+    });
+    assert.match(html, /class: "node-focus-ring"/);
+    assert.match(html, /\.node:focus-visible \.node-focus-ring \{ opacity: 1; \}/);
+    assert.match(html, /tabindex: "0"/);
+    assert.match(html, /role: "treeitem"/);
+    assert.match(html, /ArrowLeft/);
+    assert.match(html, /ArrowRight/);
+    assert.match(html, /ArrowUp/);
+    assert.match(html, /ArrowDown/);
+});
+
+test("renderer contract disables ornamental motion when reduced motion is requested", () => {
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+    });
+    assert.match(html, /@media \(prefers-reduced-motion: reduce\)/);
+    assert.match(html, /animation-duration: \.001ms !important/);
+    assert.match(html, /\.edge\.working \{ stroke-dasharray: none; \}/);
+    assert.match(html, /\.node-halo \{ display: none; \}/);
+});
+
+test("renderer contract supports forced colors without relying on status color", () => {
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+    });
+    assert.match(html, /@media \(forced-colors: active\)/);
+    assert.match(html, /background: Canvas/);
+    assert.match(html, /stroke: CanvasText/);
+    assert.match(html, /stroke: Highlight/);
+    assert.match(html, /forced-color-adjust: none/);
+});
+
+test("renderer contract preserves controls and status context in narrow panes", () => {
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+    });
+    assert.match(html, /min-width: 280px/);
+    assert.match(html, /@media \(max-width: 440px\)/);
+    assert.match(html, /grid-template-columns: minmax\(0, 1fr\) auto/);
+    assert.match(html, /overflow-x: auto/);
+    assert.match(html, /width: Math\.max\(280, rect\.width\)/);
 });

@@ -18,7 +18,7 @@ Copilot can coordinate work across several project sessions, but a text list mak
 - Which agents have completed and can get out of the way?
 - Which repository, branch, model, and reasoning effort belong to each session?
 
-Agent Constellation makes those relationships visible. The current session is marked, parent-child edges show the family tree, animated edges and halos indicate active work, status colors highlight attention, and a details inspector exposes sanitized metadata for a selected session.
+Agent Constellation makes those relationships visible. The current session is marked, parent-child edges show the family tree, restrained motion indicates active work, and a details inspector exposes sanitized metadata for a selected session. Every status also has a distinct shape or symbol, so color is never the only cue.
 
 ## Highlights
 
@@ -37,11 +37,19 @@ Statuses include:
 - **Completed**
 - **Archived**
 
+Status markers stay consistent between the summary strip, session cards, and inspector. Busy uses a filled circle, idle a hollow circle, completed a check, user attention a diamond, plan approval a clock, blocked an octagon, failed a cross, and archived a striped square. Text labels remain visible alongside every marker.
+
 Completed descendants collapse into a **Completed shelf** so a large constellation remains readable. Expand the shelf when you need to inspect finished work.
 
 ### Responsive side-pane layout
 
-Wide canvases use a horizontal family-tree layout. Narrow or tall side panes automatically switch to a compact vertical mission-control layout with readable cards, horizontal ancestry, and scrollable depth. The toolbar also condenses for narrow panes.
+Wide canvases use a horizontal family-tree layout. Narrow or tall side panes automatically switch to a compact vertical mission-control layout with readable cards, horizontal ancestry, and scrollable depth. At phone-width panes the toolbar becomes a compact two-column header while status counts remain horizontally scrollable instead of disappearing.
+
+### Theme and accessibility behavior
+
+The renderer uses the Copilot canvas theme contract for backgrounds, borders, text, focus outlines, semantic true colors, typography, and code fonts. It follows app light and dark themes without loading external styles or assets.
+
+Keyboard focus gets an explicit ring around the complete SVG card, and arrow keys move directionally between sessions. Windows high-contrast and other forced-color modes replace decorative fills and shadows with system `Canvas`, `CanvasText`, and `Highlight` colors while preserving the status shapes. Reduced-motion mode removes pulsing halos and flowing edge dashes in addition to suppressing transitions and animated attention effects.
 
 ### Model and reasoning badges
 
@@ -138,7 +146,7 @@ For an explicit local-model UI demonstration:
 - **Double-click empty canvas space** to zoom in.
 - **Escape** closes the inspector.
 
-Animations honor `prefers-reduced-motion`.
+Animations honor `prefers-reduced-motion`; no completion confetti or persistent success animation is used, so completed work remains calm in large trees.
 
 ## Update or reinstall
 
@@ -208,7 +216,7 @@ The TypeScript check compiles a small SDK contract fixture so changes to canvas 
 
 To exercise the extension in this repository, reload Copilot extensions, open **Agent Constellation**, invoke its `refresh` and `get_state` actions, and verify invalid open/action inputs are rejected by the SDK schema.
 
-The extension intentionally has **no runtime dependencies**. Keep renderer assets self-contained and preserve the loopback, token, sanitization, and read-only database guarantees.
+The extension intentionally has **no runtime dependencies**. Keep renderer assets self-contained, use the documented canvas theme tokens, and preserve the loopback, token, sanitization, and read-only database guarantees.
 
 ## Contributing
 
