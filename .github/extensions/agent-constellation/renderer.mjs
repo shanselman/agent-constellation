@@ -651,7 +651,11 @@ export function renderConstellationHtml(config) {
       const parts = [node.name, statusText(node), node.repository];
       if (node.projectName) parts.push("project " + node.projectName);
       if (node.syntheticParentId) {
-        parts.push("independent root grouped for display; no recorded parent");
+        parts.push(
+          node.parentId
+            ? "parent session outside this project; grouped for display"
+            : "no recorded parent; grouped for display"
+        );
       }
       if (node.isCurrent) parts.push("current session");
       if (node.isRoot) parts.push("constellation root");

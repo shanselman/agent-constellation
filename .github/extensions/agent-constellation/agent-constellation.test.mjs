@@ -1602,6 +1602,10 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     assert.match(html, /aria-hidden="true"/);
     assert.match(html, /function closeInspector/);
     assert.match(html, /function appendModelDetail/);
+    assert.match(
+        html,
+        /node\.parentId\s*\?\s*"parent session outside this project; grouped for display"\s*:\s*"no recorded parent; grouped for display"/
+    );
     assert.match(html, /localLabel\.textContent = node\.demoLocalModel \? "Demo local model" : "Local model"/);
     assert.match(html, /"aria-label": "Runs locally"/);
     assert.match(html, /title\.textContent = "Runs locally"/);
