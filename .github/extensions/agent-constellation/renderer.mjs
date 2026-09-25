@@ -48,7 +48,7 @@ export function renderConstellationHtml(config) {
       background: var(--canvas-bg);
       color: var(--text);
     }
-    button, select {
+    button, select, input {
       color: inherit;
       background: var(--card-bg);
       border: 1px solid var(--border);
@@ -57,7 +57,7 @@ export function renderConstellationHtml(config) {
     }
     button { cursor: pointer; min-height: 30px; padding: 4px 8px; }
     button:hover { border-color: var(--muted); }
-    button:focus-visible, select:focus-visible {
+    button:focus-visible, select:focus-visible, input:focus-visible {
       outline: 2px solid var(--focus);
       outline-offset: 2px;
     }
@@ -186,6 +186,18 @@ export function renderConstellationHtml(config) {
       color: var(--muted);
       font-size: 12px;
     }
+    .filters .search-label { flex: 1 1 260px; }
+    input[type="search"] {
+      min-width: 120px;
+      width: 100%;
+      padding: 4px 7px;
+    }
+    .filter-summary {
+      margin-left: auto;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
     select { min-width: 0; max-width: 240px; padding: 4px 24px 4px 7px; }
     .workspace {
       grid-row: 3;
@@ -241,6 +253,11 @@ export function renderConstellationHtml(config) {
       stroke-dasharray: 2 7;
       opacity: .78;
     }
+    .edge.repository-group {
+      stroke: var(--busy);
+      stroke-dasharray: 4 5;
+      opacity: .82;
+    }
     @keyframes flow { to { stroke-dashoffset: -32; } }
     .node { cursor: pointer; }
     .node-card {
@@ -272,6 +289,15 @@ export function renderConstellationHtml(config) {
       fill: color-mix(in srgb, var(--card-bg) 76%, var(--plan) 24%);
       stroke: var(--plan);
       stroke-dasharray: 3 5;
+    }
+    .node.repository-group .node-card {
+      fill: color-mix(in srgb, var(--card-bg) 78%, var(--busy) 22%);
+      stroke: var(--busy);
+      stroke-dasharray: 5 4;
+    }
+    .node.focus-origin .node-card {
+      stroke-width: 4;
+      filter: drop-shadow(0 0 10px color-mix(in srgb, var(--focus) 58%, transparent));
     }
     .node-halo { fill: none; stroke: var(--status-color); opacity: 0; transform-origin: center; }
     .node.busy .node-halo { opacity: .46; animation: pulse 1.8s ease-out infinite; }
@@ -422,7 +448,9 @@ export function renderConstellationHtml(config) {
       .toolbar .optional-label { display: none; }
       .filters.open { align-items: stretch; flex-direction: column; }
       .filters label { display: grid; grid-template-columns: 70px minmax(0, 1fr); }
-      select { max-width: none; width: 100%; }
+      .filters .search-label { flex-basis: auto; }
+      .filter-summary { margin-left: 0; }
+      select, input[type="search"] { max-width: none; width: 100%; }
       dl { grid-template-columns: 1fr; gap: 1px; }
       dd { margin-bottom: 4px; }
       .inspector { max-height: min(48vh, 320px); }
@@ -462,7 +490,8 @@ export function renderConstellationHtml(config) {
       }
       button, select { border-color: ButtonBorder; background: Canvas; color: CanvasText; }
       button:focus-visible, select:focus-visible { outline-color: Highlight; }
-      .edge, .edge.working, .edge.attention, .edge.shelf, .edge.containment {
+      .edge, .edge.working, .edge.attention, .edge.shelf, .edge.containment,
+      .edge.repository-group {
         stroke: CanvasText;
       }
       .node-card {
@@ -508,6 +537,8 @@ export function renderConstellationHtml(config) {
       <div class="status-strip" id="legend" aria-label="Mission status counts"></div>
       <div class="toolbar" aria-label="Constellation controls">
         <button id="refresh" type="button" title="Refresh live state">↻<span class="sr-only">Refresh</span></button>
+        <button id="searchFocus" class="text-control" type="button" title="Search sanitized session metadata">⌕<span class="optional-label"> Search</span></button>
+        <button id="showAll" class="text-control" type="button" hidden>Show all</button>
         <button id="home" class="text-control" type="button" title="Center the current session">◎<span class="optional-label"> Current</span><span class="sr-only">Center current session</span></button>
         <button id="fitWidth" class="text-control" type="button" title="Fit readable card width">↔<span class="optional-label"> Width</span><span class="sr-only">Fit width</span></button>
         <button id="zoomOut" type="button" aria-label="Zoom out">−</button>
@@ -516,6 +547,9 @@ export function renderConstellationHtml(config) {
       </div>
     </header>
     <section class="filters" id="filters" aria-label="Constellation filters">
+      <label class="search-label">Search
+        <input id="searchInput" type="search" placeholder="Name, project, repo, branch, reference, model, status" autocomplete="off" spellcheck="false" aria-describedby="searchHelp">
+      </label>
       <label>Status
         <select id="statusFilter">
           <option value="">All statuses</option>
@@ -535,18 +569,20 @@ export function renderConstellationHtml(config) {
       <label>Project
         <select id="projectFilter"><option value="">All projects</option></select>
       </label>
+      <span class="filter-summary" id="filterSummary"></span>
     </section>
     <main class="workspace">
       <section class="stage" id="stage" aria-label="Agent family tree">
-        <svg id="constellation" role="tree" aria-label="Copilot project session constellation">
+        <svg id="constellation" role="tree" aria-label="Copilot project session constellation" aria-describedby="keyboardHelp">
           <g id="viewport"><g id="edges"></g><g id="nodes"></g></g>
         </svg>
-        <div class="empty" id="empty">No live sessions match these filters.</div>
+        <div class="empty" id="empty" role="status">No live sessions match these filters.</div>
       </section>
       <section class="inspector" id="inspector" aria-label="Selected session details" aria-hidden="true">
         <div class="inspector-head">
           <h2 id="detailName">Session details</h2>
           <div class="detail-status status-idle" id="detailStatus"><span class="status-glyph" aria-hidden="true"></span><span></span></div>
+          <button id="focusSelected" type="button">Focus lineage</button>
           <button class="inspector-close" id="inspectorClose" type="button" aria-label="Close session details">×</button>
         </div>
         <dl id="details"></dl>
@@ -557,10 +593,13 @@ export function renderConstellationHtml(config) {
   <div class="sr-only" id="scopeDescription">
     Tree shows the current session family. All sessions adds a synthetic overview container; dashed grouping connections do not represent parent-child lineage.
   </div>
+  <div class="sr-only" id="searchHelp">Searches sanitized session names, projects, repositories, branches, pull requests, issues, tasks, models, and statuses.</div>
+  <div class="sr-only" id="keyboardHelp">Use arrow keys between nearby cards, Page Up for the visual parent, Page Down for the first child, Home for the current session, Control Home for the root, F to focus a selected lineage, and Escape to close details or clear focus.</div>
   <div class="sr-only" id="live" aria-live="polite"></div>
   <script type="module">
     import {
       applyPinchGesture,
+      buildLineageFocusSet,
       cardMarkerLayout,
       describeMeaningfulConstellationChange,
       filterConstellationView,
@@ -569,7 +608,10 @@ export function renderConstellationHtml(config) {
       layoutResponsiveConstellation,
       programmaticScrollBehavior,
       resolveVisibleSelection,
-      resolveProjectFilter
+      normalizeSearchQuery,
+      resolveProjectFilter,
+      selectConstellationVisibility,
+      visualParentId
     } from "./layout.mjs";
 
     const config = ${serializedConfig};
@@ -591,25 +633,30 @@ export function renderConstellationHtml(config) {
     };
     const state = {
       data: null,
+      visibleState: null,
       layout: null,
       selectedId: null,
+      rovingId: null,
       status: config.initialStatus || "",
       repository: config.initialRepository || "",
       project: config.initialProject || "",
+      search: "",
+      focusSessionId: "",
       scope: config.initialScope === "all" ? "all" : "tree",
       completedExpanded: config.initialStatus === "completed",
       archivedExpanded: config.initialStatus === "archived",
+      expandedGroupIds: new Set(),
       transform: { x: 0, y: 0, k: 1 },
       pointers: new Map(),
       gesture: null,
       firstRender: true
     };
     const elements = Object.fromEntries([
-      "summary", "scopeSelect", "refresh", "home", "fitWidth", "zoomOut", "zoomIn",
+      "summary", "scopeSelect", "refresh", "searchFocus", "showAll", "home", "fitWidth", "zoomOut", "zoomIn",
       "filtersToggle", "filters", "statusFilter", "repoFilter", "legend",
-      "projectFilter",
+      "projectFilter", "searchInput", "filterSummary",
       "stage", "constellation", "viewport", "edges", "nodes", "empty",
-      "inspector", "inspectorClose", "detailName", "detailStatus", "details",
+      "inspector", "inspectorClose", "focusSelected", "detailName", "detailStatus", "details",
       "sourceNote", "live"
     ].map((id) => [id, document.getElementById(id)]));
 
@@ -714,6 +761,11 @@ export function renderConstellationHtml(config) {
     }
 
     function statusText(node) {
+      if (node.isRepositoryGroup) {
+        return node.groupExpanded
+          ? "Collapse " + node.totalCount + " sessions"
+          : "Expand " + node.hiddenCount + " grouped sessions";
+      }
       if (node.synthetic) return "Grouping only";
       const base = statusLabels[node.status] || node.status;
       return node.status === "busy" && node.busySince
@@ -723,10 +775,14 @@ export function renderConstellationHtml(config) {
 
     function filteredState() {
       if (!state.data) return null;
-      return filterConstellationView(state.data, {
+      const filtered = filterConstellationView(state.data, {
         status: state.status,
         repository: state.repository,
         project: state.project
+      });
+      return selectConstellationVisibility(filtered, {
+        search: state.search,
+        focusSessionId: state.focusSessionId
       });
     }
 
@@ -805,9 +861,28 @@ export function renderConstellationHtml(config) {
       elements.details.append(dt, dd);
     }
 
+    function lineageText(node) {
+      const focused = buildLineageFocusSet(state.data?.nodes, node.id);
+      const byId = new Map((state.data?.nodes || []).map((item) => [item.id, item]));
+      let ancestors = 0;
+      let current = node;
+      const visited = new Set();
+      while (current && !visited.has(current.id)) {
+        visited.add(current.id);
+        const parentId = visualParentId(current);
+        if (!parentId || !byId.has(parentId)) break;
+        ancestors++;
+        current = byId.get(parentId);
+      }
+      const descendants = Math.max(0, focused.size - ancestors - 1);
+      return ancestors + " ancestor" + (ancestors === 1 ? "" : "s") +
+        " · " + descendants + " descendant" + (descendants === 1 ? "" : "s");
+    }
+
     function openInspector(node, announce) {
-      if (node.synthetic) return;
+      if (node.synthetic || node.isRepositoryGroup) return;
       state.selectedId = node.id;
+      state.rovingId = node.id;
       elements.inspector.classList.add("open");
       elements.inspector.setAttribute("aria-hidden", "false");
       elements.detailName.textContent = node.name;
@@ -824,6 +899,7 @@ export function renderConstellationHtml(config) {
         [node.isCurrent ? "Current session" : "", node.isRoot ? "Root coordinator" : ""]
           .filter(Boolean).join(" · ")
       );
+      appendDetail("Lineage", lineageText(node));
       appendDetail("Task", node.task);
       appendDetail("Pull request", node.pullRequest);
       appendDetail("Issue", node.issue);
@@ -831,6 +907,9 @@ export function renderConstellationHtml(config) {
       appendDetail("Busy elapsed", node.status === "busy" ? elapsed(node.busySince) : "");
       appendDetail("Last activity", node.updatedAt ? new Date(node.updatedAt).toLocaleString() : "");
       appendDetail("Session ID", node.id, true);
+      elements.focusSelected.textContent =
+        state.focusSessionId === node.id ? "Focused" : "Focus lineage";
+      elements.focusSelected.disabled = state.focusSessionId === node.id;
       updateSelection();
       if (announce) elements.live.textContent = "Opened details for " + node.name + ", " + statusText(node);
     }
@@ -864,6 +943,7 @@ export function renderConstellationHtml(config) {
         const selected = item.dataset.id === state.selectedId;
         item.classList.toggle("selected", selected);
         item.setAttribute("aria-selected", selected ? "true" : "false");
+        item.setAttribute("tabindex", item.dataset.id === state.rovingId ? "0" : "-1");
       });
     }
 
@@ -874,6 +954,13 @@ export function renderConstellationHtml(config) {
           : state.completedExpanded;
         return node.name + ", " +
           (expanded ? "collapse " : "expand ") + node.shelfType + " agents";
+      }
+      if (node.isRepositoryGroup) {
+        return node.repository + " repository group, " + node.totalCount +
+          " sessions across " + node.groupMemberCount + " sibling branches, " +
+          (node.groupExpanded
+            ? "expanded, collapse repository group"
+            : node.hiddenCount + " hidden, expand repository group");
       }
       if (node.synthetic) {
         return node.name + ", synthetic grouping container, not a session or parent-child relationship";
@@ -1008,7 +1095,8 @@ export function renderConstellationHtml(config) {
             (target?.status === "busy" ? " working" : "") +
             (target?.status === "waiting-user" || target?.status === "waiting-plan" ? " attention" : "") +
             (edge.isShelf ? " shelf" : "") +
-            (edge.kind === "containment" ? " containment" : ""),
+            (edge.kind === "containment" ? " containment" : "") +
+            (edge.isRepositoryGroup ? " repository-group" : ""),
           "aria-hidden": "true"
         });
         elements.edges.appendChild(path);
@@ -1026,6 +1114,19 @@ export function renderConstellationHtml(config) {
         (expanded ? "expanded." : "collapsed.");
     }
 
+    function toggleRepositoryGroup(node) {
+      if (state.expandedGroupIds.has(node.id)) {
+        state.expandedGroupIds.delete(node.id);
+      } else {
+        state.expandedGroupIds.add(node.id);
+      }
+      state.rovingId = node.id;
+      render();
+      requestAnimationFrame(() => focusNode(node.id, { scroll: false }));
+      elements.live.textContent = node.repository + " repository group " +
+        (node.groupExpanded ? "collapsed." : "expanded.");
+    }
+
     function renderNodes() {
       const focusedId = document.activeElement?.classList?.contains("node")
         ? document.activeElement.dataset.id
@@ -1033,9 +1134,25 @@ export function renderConstellationHtml(config) {
       elements.nodes.replaceChildren();
       const width = state.layout.cardWidth;
       const height = state.layout.cardHeight;
+      const visibleIds = new Set(state.layout.nodes.map((node) => node.id));
+      if (!visibleIds.has(state.rovingId)) {
+        state.rovingId =
+          (visibleIds.has(focusedId) && focusedId) ||
+          (visibleIds.has(state.selectedId) && state.selectedId) ||
+          (visibleIds.has(state.data.currentSessionId) && state.data.currentSessionId) ||
+          (visibleIds.has(state.data.rootId) && state.data.rootId) ||
+          state.layout.nodes[0]?.id ||
+          null;
+      }
+      const siblings = new Map();
+      state.layout.nodes.forEach((node) => {
+        const parentKey = visualParentId(node) || "__root__";
+        if (!siblings.has(parentKey)) siblings.set(parentKey, []);
+        siblings.get(parentKey).push(node.id);
+      });
       const markerLayout = cardMarkerLayout(width, height);
       state.layout.nodes.forEach((node) => {
-        const modelLabel = node.isShelf
+        const modelLabel = node.isShelf || node.isRepositoryGroup
           ? ""
           : formatModelLabel(node.model, node.reasoningEffort);
         const hasModelLabel = Boolean(modelLabel);
@@ -1043,15 +1160,26 @@ export function renderConstellationHtml(config) {
           class: "node " + node.status + " status-" + node.status +
             (node.isRoot ? " root" : "") +
             (node.isCurrent ? " current" : "") +
+            (state.focusSessionId === node.id ? " focus-origin" : "") +
             (node.isShelf ? " shelf" : "") +
+            (node.isRepositoryGroup ? " repository-group" : "") +
             (node.synthetic ? " synthetic" : ""),
           transform: "translate(" + node.x + " " + node.y + ")",
-          tabindex: "0",
+          tabindex: node.id === state.rovingId ? "0" : "-1",
           role: "treeitem",
           "aria-label": nodeAriaLabel(node),
           "aria-selected": state.selectedId === node.id ? "true" : "false",
           "aria-current": node.isCurrent ? "true" : undefined,
-          "aria-level": Number(node.depth || 0) + 1
+          "aria-level": Number(node.depth || 0) + 1,
+          "aria-setsize": siblings.get(visualParentId(node) || "__root__")?.length,
+          "aria-posinset": siblings.get(visualParentId(node) || "__root__")?.indexOf(node.id) + 1,
+          "aria-expanded": node.isRepositoryGroup
+            ? String(node.groupExpanded)
+            : node.isShelf
+              ? String(node.shelfType === "archived"
+                  ? state.archivedExpanded
+                  : state.completedExpanded)
+              : undefined
         });
         group.dataset.id = node.id;
         const halo = svgElement("circle", {
@@ -1104,7 +1232,9 @@ export function renderConstellationHtml(config) {
               : state.completedExpanded)
               ? "Collapse shelf"
               : "Expand shelf")
-          : statusText(node);
+          : node.isRepositoryGroup
+            ? statusText(node)
+            : statusText(node);
         const statusMarker = nodeStatusMarker(node.status, {
           transform:
             "translate(" + markerLayout.status.x + " " + markerLayout.status.y + ")"
@@ -1154,8 +1284,14 @@ export function renderConstellationHtml(config) {
           group.append(marker, markerText);
         }
         group.addEventListener("click", () => {
+          state.rovingId = node.id;
           if (node.isShelf) toggleShelf(node);
+          else if (node.isRepositoryGroup) toggleRepositoryGroup(node);
           else if (!node.synthetic) openInspector(node, true);
+        });
+        group.addEventListener("focus", () => {
+          state.rovingId = node.id;
+          updateSelection();
         });
         group.addEventListener("keydown", (event) => handleNodeKey(event, node));
         elements.nodes.appendChild(group);
@@ -1168,7 +1304,44 @@ export function renderConstellationHtml(config) {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         if (node.isShelf) toggleShelf(node);
+        else if (node.isRepositoryGroup) toggleRepositoryGroup(node);
         else if (!node.synthetic) openInspector(node, true);
+        return;
+      }
+      if (event.key.toLowerCase() === "f" && !node.synthetic) {
+        event.preventDefault();
+        event.stopPropagation();
+        focusLineage(node.id);
+        return;
+      }
+      if (event.key === "PageUp") {
+        const parentId = visualParentId(node);
+        if (parentId) {
+          event.preventDefault();
+          event.stopPropagation();
+          focusNode(parentId);
+        }
+        return;
+      }
+      if (event.key === "PageDown") {
+        const child = state.layout.nodes.find(
+          (item) => visualParentId(item) === node.id
+        );
+        if (child) {
+          event.preventDefault();
+          event.stopPropagation();
+          focusNode(child.id);
+        }
+        return;
+      }
+      if (event.key === "Home") {
+        event.preventDefault();
+        event.stopPropagation();
+        focusNode(
+          event.ctrlKey
+            ? state.layout.nodes.find((item) => item.isRoot)?.id || state.data.rootId
+            : state.data.currentSessionId
+        );
         return;
       }
       if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
@@ -1193,6 +1366,58 @@ export function renderConstellationHtml(config) {
       }
     }
 
+    function focusNode(id, { scroll = true } = {}) {
+      if (!id) return false;
+      const target = elements.nodes.querySelector(
+        '[data-id="' + CSS.escape(id) + '"]'
+      );
+      if (!target) return false;
+      state.rovingId = id;
+      updateSelection();
+      target.focus({ preventScroll: !scroll });
+      if (scroll) target.scrollIntoView({ block: "nearest", inline: "nearest" });
+      return true;
+    }
+
+    function focusLineage(id) {
+      const node = state.data?.nodes.find((item) => item.id === id && !item.synthetic);
+      if (!node) return;
+      state.focusSessionId = id;
+      state.selectedId = id;
+      state.rovingId = id;
+      render();
+      openInspector(node, false);
+      requestAnimationFrame(() => focusNode(id));
+      elements.live.textContent =
+        "Focused on " + node.name + " with its ancestors and descendants.";
+    }
+
+    function showAll() {
+      const changed = Boolean(
+        state.search ||
+        state.focusSessionId ||
+        state.status ||
+        state.repository ||
+        (!elements.projectFilter.disabled && state.project)
+      );
+      state.search = "";
+      state.focusSessionId = "";
+      state.status = "";
+      state.repository = "";
+      if (!elements.projectFilter.disabled) state.project = "";
+      elements.searchInput.value = "";
+      elements.statusFilter.value = "";
+      elements.repoFilter.value = "";
+      if (!elements.projectFilter.disabled) elements.projectFilter.value = "";
+      render();
+      requestAnimationFrame(() =>
+        focusNode(state.selectedId || state.data.currentSessionId, {
+          scroll: false
+        })
+      );
+      if (changed) elements.live.textContent = "Showing all sessions in this scope.";
+    }
+
     function updateSummary() {
       const counts = state.data.counts;
       const waiting = (counts["waiting-user"] || 0) + (counts["waiting-plan"] || 0);
@@ -1201,19 +1426,46 @@ export function renderConstellationHtml(config) {
         ? "All sessions"
         : "Tree";
       elements.summary.textContent =
-        scopeLabel + " · " + live + " live · " +
+        scopeLabel + " · " +
+        state.layout.nodes.length + " shown · " +
+        live + " live · " +
         (counts.completed || 0) + " completed · " + state.layout.orientation;
+      if (state.layout.hiddenSessionCount) {
+        elements.summary.textContent +=
+          " · " + state.layout.hiddenSessionCount + " grouped";
+      }
+      elements.constellation.setAttribute(
+        "aria-orientation",
+        state.layout.orientation === "vertical" ? "horizontal" : "vertical"
+      );
+      const query = normalizeSearchQuery(state.search);
+      const matchCount = state.visibleState?.visibility?.directMatchCount ?? 0;
+      elements.filterSummary.textContent = query
+        ? matchCount + " search result" + (matchCount === 1 ? "" : "s")
+        : state.focusSessionId
+          ? "Lineage focus active"
+          : "";
+      elements.showAll.hidden = !(
+        query ||
+        state.focusSessionId ||
+        state.status ||
+        state.repository ||
+        (!elements.projectFilter.disabled && state.project)
+      );
     }
 
     function render() {
       if (!state.data) return;
       const size = stageSize();
       const visibleState = filteredState();
+      state.visibleState = visibleState;
       state.layout = layoutResponsiveConstellation(visibleState, {
         width: size.width,
         height: size.height,
         completedExpanded: state.completedExpanded,
-        archivedExpanded: state.archivedExpanded
+        archivedExpanded: state.archivedExpanded,
+        selectedId: state.selectedId,
+        expandedGroupIds: state.expandedGroupIds
       });
       state.selectedId = resolveVisibleSelection(
         state.layout.nodes,
@@ -1226,7 +1478,9 @@ export function renderConstellationHtml(config) {
       renderLegend();
       updateSummary();
       const projectFilter = visibleState?.diagnostics?.projectFilter;
-      elements.empty.textContent = projectFilter?.status === "ambiguous"
+      elements.empty.textContent = visibleState?.visibility?.noMatches
+        ? 'No sessions match "' + state.search.trim() + '". Choose Show all to reset.'
+        : projectFilter?.status === "ambiguous"
         ? "The project name is ambiguous. Use its project ID."
         : projectFilter?.status === "unknown"
           ? "The selected project is unavailable."
@@ -1281,6 +1535,18 @@ export function renderConstellationHtml(config) {
         ? describeMeaningfulConstellationChange(state.data, next)
         : "";
       state.data = next;
+      if (
+        state.focusSessionId &&
+        !next.nodes.some((node) => node.id === state.focusSessionId)
+      ) {
+        state.focusSessionId = "";
+      }
+      if (
+        state.selectedId &&
+        !next.nodes.some((node) => node.id === state.selectedId)
+      ) {
+        state.selectedId = null;
+      }
       state.scope = next.diagnostics?.effectiveScope === "all" ? "all" : "tree";
       elements.scopeSelect.value = state.scope;
       renderRepositories();
@@ -1391,6 +1657,12 @@ export function renderConstellationHtml(config) {
     }
 
     elements.refresh.addEventListener("click", () => refresh(true));
+    elements.searchFocus.addEventListener("click", () => {
+      elements.filters.classList.add("open");
+      elements.filtersToggle.setAttribute("aria-expanded", "true");
+      elements.searchInput.focus();
+    });
+    elements.showAll.addEventListener("click", showAll);
     elements.scopeSelect.value = state.scope;
     elements.scopeSelect.addEventListener("change", () => switchScope(elements.scopeSelect.value));
     elements.home.addEventListener("click", () => centerCurrent());
@@ -1402,6 +1674,14 @@ export function renderConstellationHtml(config) {
       elements.filtersToggle.setAttribute("aria-expanded", open ? "true" : "false");
     });
     elements.inspectorClose.addEventListener("click", () => closeInspector());
+    elements.focusSelected.addEventListener("click", () =>
+      focusLineage(state.selectedId)
+    );
+    elements.searchInput.value = state.search;
+    elements.searchInput.addEventListener("input", () => {
+      state.search = elements.searchInput.value;
+      render();
+    });
     elements.statusFilter.value = state.status;
     elements.statusFilter.addEventListener("change", () => {
       state.status = elements.statusFilter.value;
@@ -1475,11 +1755,31 @@ export function renderConstellationHtml(config) {
       if (event.key === "Escape" && elements.inspector.classList.contains("open")) {
         event.preventDefault();
         closeInspector();
+        return;
       }
-      if (event.target.matches("select, button")) return;
+      if (event.key === "Escape" && state.focusSessionId) {
+        event.preventDefault();
+        state.focusSessionId = "";
+        render();
+        requestAnimationFrame(() =>
+          focusNode(state.selectedId || state.data.currentSessionId)
+        );
+        elements.live.textContent =
+          "Lineage focus cleared. Search and filters remain active.";
+        return;
+      }
+      if (event.key === "/" && !event.target.matches("input, select, button")) {
+        event.preventDefault();
+        elements.filters.classList.add("open");
+        elements.filtersToggle.setAttribute("aria-expanded", "true");
+        elements.searchInput.focus();
+        return;
+      }
+      if (event.target.matches("input, select, button")) return;
       if (event.key === "+" || event.key === "=") setZoom(state.transform.k * 1.16);
       if (event.key === "-") setZoom(state.transform.k / 1.16);
       if (event.key === "Home") {
+        if (event.ctrlKey) return;
         event.preventDefault();
         centerCurrent();
       }

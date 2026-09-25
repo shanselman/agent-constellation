@@ -45,6 +45,14 @@ The status strip, cards, and inspector reuse the same semantics: busy is a fille
 
 Completed and archived descendants collapse into separate **Completed** and **Archived** shelves so a large constellation remains readable. Sessions needing attention sort first, followed by busy work, idle work, and the two shelves. Expand either shelf when you need to inspect finished or historical work.
 
+### Search, lineage focus, and repository groups
+
+Search uses normalized token matching across sanitized session names, projects, repositories, branches, pull requests, issues, tasks, providers, models, reasoning effort, and statuses. It never searches prompts, messages, tool arguments, file contents, or secrets. Search results retain their visual ancestry through `syntheticParentId || parentId`, so a matching session is never shown without its available lineage context.
+
+Selecting **Focus lineage** keeps the chosen session, its ancestors, and its descendants. Search and focus compose rather than replacing each other, and **Show all** clears local search/focus/status/repository/project selectors while preserving any server-enforced project scope.
+
+At 30 real visible sessions, direct siblings are automatically grouped when at least three share the same repository. A repository summary remains a sibling of the real sessions and uses a synthetic dashed edge; it never replaces or rewrites recorded lineage. Expanding a group persists across rerenders. Search matches, the selected/current sessions, waiting/blocked/failed sessions, and their visual ancestry remain explicit even when the rest of their repository group is collapsed.
+
 ### Responsive side-pane layout
 
 The layout is designed for the normal right-hand pane first, not for a full-screen diagram. At 280, 320, 480, and 700 pixels, cards use a bounded stacked layout: depth is shown with a small capped indent, connections stay in the left gutter, and the content width never grows beyond the pane. Tall panes use the same bounded layout.
@@ -63,7 +71,7 @@ The renderer uses the canvas theme contract instead of app-internal styles:
 | Status accents | `--true-color-blue`, `--true-color-blue-muted`, `--true-color-red`, and semantic true-color peers with fallbacks |
 | Typography | `--font-sans`, `--font-mono`, type-ramp and weight tokens |
 
-Keyboard focus gets an explicit ring around the complete SVG card and is restored to the same session after live renderer refreshes when that session remains visible. Resize and orientation recentering move only the camera, so an open inspector keeps its selected session across narrow/wide transitions. Arrow keys move directionally between cards. Home, Fit, keyboard target reveal, and inspector focus restoration all switch from smooth to immediate scrolling when `prefers-reduced-motion` is active. Automatic live-region messages ignore timestamp-only refreshes and announce only additions, removals, scope changes, or status changes.
+Keyboard focus gets an explicit ring around the complete SVG card and is restored to the same session or repository summary after meaningful rerenders when that target remains visible. Resize and orientation recentering move only the camera, so an open inspector keeps its selected session across narrow/wide transitions. Arrow keys move directionally between cards, Page Up moves to the visual parent, Page Down moves to the first visible child, Home moves to the current session, and Ctrl+Home moves to the visible root without triggering the global recenter command. Home, Fit, keyboard target reveal, and inspector focus restoration all switch from smooth to immediate scrolling when `prefers-reduced-motion` is active. Automatic live-region messages ignore timestamp-only refreshes and announce only additions, removals, scope changes, status changes, and deliberate search/focus/group actions.
 
 Windows high-contrast and other forced-color modes replace decorative surfaces, edges, markers, and focus with system `Canvas`, `CanvasText`, `Highlight`, and `HighlightText` colors. The `CURRENT` badge specifically uses `HighlightText` over `Highlight`. Reduced-motion mode removes pulsing halos and flowing edge dashes in addition to suppressing transitions and attention animations.
 
@@ -180,9 +188,16 @@ For an explicit local-model UI demonstration:
 - **Current** centers the current session.
 - **Width** fits the tree to a readable minimum card scale.
 - **+ / -** zooms.
+- **Search** opens sanitized metadata search; `/` is its explicit keyboard shortcut.
 - **Filter** narrows by status, project, or repository.
+- **Show all** resets local search, focus, and filters without widening a server-enforced project scope.
 - **Click or press Enter/Space** on a session to open its inspector.
 - **Arrow keys** move focus directionally between session cards.
+- **Page Up / Page Down** move to the visual parent or first visible child.
+- **Home / Ctrl+Home** move keyboard focus to the current session or visible root.
+- **F** focuses the lineage of the currently focused real session.
+- **Focus lineage** in the inspector shows the selected session with its ancestors and descendants.
+- **Click or press Enter/Space** on a repository summary to expand or collapse that direct-sibling group.
 - **Click the Completed or Archived shelf** to expand or collapse those descendants.
 - **Drag empty canvas space** to pan.
 - **Pinch** with two touch or pointer contacts to zoom and pan around the moving midpoint.
@@ -206,8 +221,8 @@ The installable extension lives entirely in [`.github/extensions/agent-constella
 |---|---|
 | `extension.mjs` | Declares the canvas, open schema, actions, and lifecycle with the Copilot SDK. |
 | `data.mjs` | Reads local sources, derives statuses and relationships, sanitizes project/session metadata, normalizes tree/all scopes, filters state, and isolates demo decoration. |
-| `layout.mjs` | Produces deterministic bounded-stack/horizontal layouts, density-aware orientation, attention-first ordering, completed/archived shelves, shared card-marker slots, meaningful-change summaries, explicit synthetic containment, model labels, fit scaling, and pinch transforms. |
-| `renderer.mjs` | Generates the accessible, right-pane-first, theme-aware canvas UI and per-view scope/project/repository controls. |
+| `layout.mjs` | Produces deterministic search/focus visibility, visual-ancestry protection, direct-sibling repository groups, bounded-stack/horizontal layouts, density-aware orientation, attention-first ordering, completed/archived shelves, shared card-marker slots, meaningful-change summaries, explicit synthetic containment, model labels, fit scaling, and pinch transforms. |
+| `renderer.mjs` | Generates the accessible, right-pane-first, theme-aware canvas UI with persistent repository expansion, roving keyboard focus, search/focus reset controls, and per-view scope/project/repository controls. |
 | `server.mjs` | Hosts the token-protected loopback page, JSON state, per-instance scope endpoint, refresh endpoint, and SSE stream. |
 | `agent-constellation.test.mjs` | Covers multi-project collection, sanitization, identity labels, real/synthetic relationships, scope isolation, responsive layout, gestures, local-model semantics, renderer accessibility, and loopback protections. |
 | `copilot-extension.json` | Identifies the folder as a shareable/installable Copilot extension. |
@@ -230,6 +245,8 @@ The extension tolerates missing tables, columns, databases, and event files. It 
 - Project and relationship metadata can be partial for older or evolving app schemas. Diagnostics identify those limitations rather than guessing.
 - Copilot's local app data schema can evolve. The collector uses guarded reads and fallbacks, but a future schema change may temporarily reduce available metadata.
 - Statuses are inferred from local app state and recent event metadata; unavailable sources reduce precision.
+- Search is normalized token-substring matching rather than fuzzy or full-text search.
+- Repository grouping is deliberately local to direct siblings and existing repository labels; it does not infer relationships or globally optimize whitespace.
 - Local-model classification requires explicit provider or runtime-prefixed model metadata.
 - The canvas is a local operational view, not a durable historical analytics store.
 - Canvas extensions require a GitHub Copilot build with extension canvas support.

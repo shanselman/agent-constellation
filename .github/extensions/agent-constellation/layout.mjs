@@ -1,6 +1,9 @@
 const completedShelfId = "__agent_constellation_completed__";
 const archivedShelfId = "__agent_constellation_archived__";
 const filteredProjectRootId = "__agent_constellation_project_scope__";
+const repositoryGroupPrefix = "__agent_constellation_repository_group__:";
+const defaultGroupingThreshold = 30;
+const defaultMinimumGroupSize = 3;
 
 const acronymLabels = new Map([
     ["ai", "AI"],
@@ -38,6 +41,24 @@ const statusPriority = new Map(
         "completed",
     ].map((status, index) => [status, index])
 );
+
+const attentionStatuses = new Set([
+    "waiting-user",
+    "waiting-plan",
+    "blocked",
+    "failed",
+]);
+
+const statusSearchLabels = new Map([
+    ["busy", "busy working"],
+    ["waiting-user", "waiting for user attention"],
+    ["waiting-plan", "waiting for plan approval"],
+    ["blocked", "blocked permission"],
+    ["failed", "failed error interrupted"],
+    ["completed", "completed done"],
+    ["idle", "idle ready"],
+    ["archived", "archived"],
+]);
 
 function clamp(value, minimum, maximum) {
     return Math.max(minimum, Math.min(maximum, value));
@@ -181,8 +202,180 @@ export function matchesProjectFilter(project, resolution) {
     );
 }
 
-function visualParentId(node) {
+export function visualParentId(node) {
     return node?.syntheticParentId || node?.parentId;
+}
+
+export function normalizeSearchQuery(value) {
+    if (typeof value !== "string") return "";
+    return value
+        .normalize("NFKD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu, " ")
+        .trim()
+        .replace(/\s+/g, " ");
+}
+
+export function sessionMatchesSearch(node, query) {
+    const normalizedQuery = normalizeSearchQuery(query);
+    if (!normalizedQuery) return true;
+    if (!node || node.synthetic || node.isShelf || node.isRepositoryGroup) {
+        return false;
+    }
+    const searchable = normalizeSearchQuery(
+        [
+            node.name,
+            node.projectName,
+            node.repository,
+            node.branch,
+            node.pullRequest,
+            node.issue,
+            node.task,
+            node.provider,
+            node.model,
+            node.reasoningEffort,
+            node.status,
+            statusSearchLabels.get(node.status),
+        ]
+            .filter(Boolean)
+            .join(" ")
+    );
+    return normalizedQuery
+        .split(" ")
+        .every((token) => searchable.includes(token));
+}
+
+export function buildLineageFocusSet(nodes, selectedId) {
+    const byId = new Map((nodes ?? []).map((node) => [node.id, node]));
+    if (!byId.has(selectedId)) return new Set();
+
+    const focused = new Set();
+    const visitedAncestors = new Set();
+    let current = byId.get(selectedId);
+    while (current && !visitedAncestors.has(current.id)) {
+        visitedAncestors.add(current.id);
+        focused.add(current.id);
+        const parentId = visualParentId(current);
+        current = parentId ? byId.get(parentId) : undefined;
+    }
+
+    const { children } = childMap([...byId.values()]);
+    const queue = [selectedId];
+    const visitedDescendants = new Set();
+    while (queue.length) {
+        const id = queue.shift();
+        if (!id || visitedDescendants.has(id)) continue;
+        visitedDescendants.add(id);
+        focused.add(id);
+        for (const child of children.get(id) ?? []) queue.push(child.id);
+    }
+    return focused;
+}
+
+function addVisualAncestry(ids, byId) {
+    for (const id of [...ids]) {
+        const visited = new Set();
+        let current = byId.get(id);
+        while (current && !visited.has(current.id)) {
+            visited.add(current.id);
+            ids.add(current.id);
+            const parentId = visualParentId(current);
+            current = parentId ? byId.get(parentId) : undefined;
+        }
+    }
+    return ids;
+}
+
+export function selectConstellationVisibility(
+    state,
+    { search = "", focusSessionId = "" } = {}
+) {
+    if (!state || !Array.isArray(state.nodes) || !Array.isArray(state.edges)) return state;
+    const query = normalizeSearchQuery(search);
+    const focusIds = focusSessionId
+        ? buildLineageFocusSet(state.nodes, focusSessionId)
+        : undefined;
+    if (!query && !focusIds) {
+        return {
+            ...state,
+            visibility: {
+                query: "",
+                directMatchCount: 0,
+                focusSessionId: "",
+                noMatches: false,
+            },
+        };
+    }
+
+    const directMatches = new Set(
+        state.nodes
+            .filter(
+                (node) =>
+                    (!focusIds || focusIds.has(node.id)) &&
+                    (!query || sessionMatchesSearch(node, query))
+            )
+            .map((node) => node.id)
+    );
+    const keep = query ? new Set(directMatches) : new Set(focusIds);
+    const byId = new Map(state.nodes.map((node) => [node.id, node]));
+    addVisualAncestry(keep, byId);
+    const nodes = state.nodes.filter((node) => keep.has(node.id));
+    const ids = new Set(nodes.map((node) => node.id));
+    return {
+        ...state,
+        rootId: ids.has(state.rootId)
+            ? state.rootId
+            : nodes.find((node) => {
+                  const parentId = visualParentId(node);
+                  return !parentId || !ids.has(parentId);
+              })?.id,
+        currentSessionId: ids.has(state.currentSessionId)
+            ? state.currentSessionId
+            : undefined,
+        nodes,
+        edges: state.edges.filter(
+            (edge) => ids.has(edge.source) && ids.has(edge.target)
+        ),
+        visibility: {
+            query,
+            directMatchCount: directMatches.size,
+            directMatchIds: [...directMatches],
+            focusSessionId: focusIds?.has(focusSessionId)
+                ? focusSessionId
+                : "",
+            focusIds: focusIds ? [...focusIds] : [],
+            noMatches: Boolean(query && directMatches.size === 0),
+        },
+    };
+}
+
+export function buildProtectedRevealSet(
+    nodes,
+    {
+        rootId,
+        currentSessionId,
+        selectedId,
+        directMatchIds = [],
+        focusIds = [],
+    } = {}
+) {
+    const byId = new Map((nodes ?? []).map((node) => [node.id, node]));
+    const protectedIds = new Set(
+        [
+            rootId,
+            currentSessionId,
+            selectedId,
+            ...directMatchIds,
+            ...focusIds,
+        ].filter((id) => byId.has(id))
+    );
+    for (const node of byId.values()) {
+        if (!node.synthetic && attentionStatuses.has(node.status)) {
+            protectedIds.add(node.id);
+        }
+    }
+    return addVisualAncestry(protectedIds, byId);
 }
 
 function filteredCounts(nodes, statuses) {
@@ -425,9 +618,19 @@ function compareNodes(left, right) {
         (statusPriority.get(left.status) ?? 99) - (statusPriority.get(right.status) ?? 99);
     const shelfDelta =
         left.isShelf === right.isShelf ? 0 : left.isShelf ? -1 : 1;
+    const groupDelta =
+        left.isRepositoryGroup === right.isRepositoryGroup
+            ? 0
+            : left.isRepositoryGroup
+              ? -1
+              : 1;
     return (
         statusDelta ||
         shelfDelta ||
+        groupDelta ||
+        String(left.repository ?? "").localeCompare(
+            String(right.repository ?? "")
+        ) ||
         String(left.name ?? "").localeCompare(String(right.name ?? "")) ||
         String(left.id).localeCompare(String(right.id))
     );
@@ -451,10 +654,13 @@ function visibleTree(
     rootId,
     currentSessionId,
     completedExpanded,
-    archivedExpanded
+    archivedExpanded,
+    protectedIds = new Set()
 ) {
     const byId = new Map(nodes.map((node) => [node.id, { ...node }]));
-    const required = new Set([rootId, currentSessionId]);
+    const required = new Set(
+        [rootId, currentSessionId, ...protectedIds].filter(Boolean)
+    );
     for (const node of byId.values()) {
         if (
             !["completed", "archived"].includes(node.status) ||
@@ -506,6 +712,202 @@ function visibleTree(
         collapsed,
         completedCount: completed.length,
         archivedCount: archived.length,
+    };
+}
+
+function highestPriorityStatus(statuses) {
+    return [...statuses].sort(
+        (left, right) =>
+            (statusPriority.get(left) ?? 99) -
+                (statusPriority.get(right) ?? 99) ||
+            String(left).localeCompare(String(right))
+    )[0] ?? "idle";
+}
+
+function treeMetadata(nodes) {
+    const { byId, children } = childMap(nodes);
+    const subtreeSessionCounts = new Map();
+    const subtreeStatuses = new Map();
+
+    function inspect(node, lineage = new Set()) {
+        if (!node || lineage.has(node.id)) {
+            return { count: 0, status: "idle" };
+        }
+        if (subtreeSessionCounts.has(node.id)) {
+            return {
+                count: subtreeSessionCounts.get(node.id),
+                status: subtreeStatuses.get(node.id),
+            };
+        }
+        const nextLineage = new Set(lineage).add(node.id);
+        let count = node.isShelf ? Number(node.shelfCount) || 1 : 1;
+        let status = node.status;
+        for (const child of children.get(node.id) ?? []) {
+            const childMetadata = inspect(child, nextLineage);
+            count += childMetadata.count;
+            status = highestPriorityStatus([status, childMetadata.status]);
+        }
+        subtreeSessionCounts.set(node.id, count);
+        subtreeStatuses.set(node.id, status);
+        return { count, status };
+    }
+
+    for (const node of byId.values()) inspect(node);
+    return { byId, children, subtreeSessionCounts, subtreeStatuses };
+}
+
+export function repositoryGroupId(parentId, repository) {
+    return `${repositoryGroupPrefix}${encodeURIComponent(
+        parentId ?? ""
+    )}:${encodeURIComponent(repository ?? "")}`;
+}
+
+export function groupDirectRepositorySiblings(
+    nodes,
+    rootId,
+    {
+        protectedIds = new Set(),
+        expandedGroupIds = new Set(),
+        groupingThreshold = defaultGroupingThreshold,
+        minimumGroupSize = defaultMinimumGroupSize,
+    } = {}
+) {
+    const metadata = treeMetadata(nodes);
+    const { byId, children, subtreeSessionCounts, subtreeStatuses } = metadata;
+    const protectedSet = new Set(protectedIds);
+    const expandedSet = new Set(expandedGroupIds);
+    const groupingEnabled =
+        [...byId.values()].filter((node) => !node.synthetic && !node.isShelf)
+            .length >= groupingThreshold;
+    if (!groupingEnabled) {
+        return {
+            nodes: [...byId.values()],
+            syntheticEdges: [],
+            groupCount: 0,
+            hiddenSessionCount: 0,
+        };
+    }
+
+    const output = [];
+    const syntheticEdges = [];
+    const emitted = new Set();
+    const suppressed = new Set();
+    let groupCount = 0;
+    let hiddenSessionCount = 0;
+
+    function suppressSubtree(node) {
+        if (!node || suppressed.has(node.id)) return;
+        suppressed.add(node.id);
+        for (const child of children.get(node.id) ?? []) suppressSubtree(child);
+    }
+
+    function appendNode(node) {
+        if (!node || emitted.has(node.id) || suppressed.has(node.id)) return;
+        emitted.add(node.id);
+        output.push(node);
+
+        const directChildren = children.get(node.id) ?? [];
+        const groupsByRepository = new Map();
+        for (const child of directChildren) {
+            if (
+                child.synthetic ||
+                child.isShelf ||
+                !child.repository ||
+                child.repository === "No project"
+            ) {
+                continue;
+            }
+            if (!groupsByRepository.has(child.repository)) {
+                groupsByRepository.set(child.repository, []);
+            }
+            groupsByRepository.get(child.repository).push(child);
+        }
+        const repositoryGroups = new Map(
+            [...groupsByRepository]
+                .filter(([, items]) => items.length >= minimumGroupSize)
+                .sort(([left], [right]) => left.localeCompare(right))
+        );
+        const groupedIds = new Set(
+            [...repositoryGroups.values()].flatMap((items) =>
+                items.map((item) => item.id)
+            )
+        );
+        const emittedRepositories = new Set();
+
+        for (const child of directChildren) {
+            const members = repositoryGroups.get(child.repository);
+            if (!members || !groupedIds.has(child.id)) {
+                appendNode(child);
+                continue;
+            }
+            if (emittedRepositories.has(child.repository)) continue;
+            emittedRepositories.add(child.repository);
+
+            const id = repositoryGroupId(node.id, child.repository);
+            const expanded = expandedSet.has(id);
+            const hiddenMembers = expanded
+                ? []
+                : members.filter((member) => !protectedSet.has(member.id));
+            const visibleMembers = expanded
+                ? members
+                : members.filter((member) => protectedSet.has(member.id));
+            const hiddenCount = hiddenMembers.reduce(
+                (sum, member) =>
+                    sum + (subtreeSessionCounts.get(member.id) ?? 1),
+                0
+            );
+            const totalCount = members.reduce(
+                (sum, member) =>
+                    sum + (subtreeSessionCounts.get(member.id) ?? 1),
+                0
+            );
+            if (expanded || hiddenCount) {
+                output.push({
+                    id,
+                    parentId: node.id,
+                    name: `${child.repository} (${totalCount})`,
+                    repository: child.repository,
+                    status: highestPriorityStatus(
+                        members.map(
+                            (member) =>
+                                subtreeStatuses.get(member.id) ?? member.status
+                        )
+                    ),
+                    synthetic: true,
+                    nodeType: "repository-group",
+                    isRepositoryGroup: true,
+                    groupExpanded: expanded,
+                    groupMemberCount: members.length,
+                    hiddenCount,
+                    totalCount,
+                });
+                syntheticEdges.push({
+                    source: node.id,
+                    target: id,
+                    kind: "repository-group",
+                    synthetic: true,
+                    isRepositoryGroup: true,
+                });
+                groupCount++;
+                hiddenSessionCount += hiddenCount;
+            }
+            for (const member of hiddenMembers) suppressSubtree(member);
+            for (const member of visibleMembers) appendNode(member);
+        }
+    }
+
+    appendNode(byId.get(rootId));
+    for (const node of [...byId.values()].sort(compareNodes)) {
+        if (!emitted.has(node.id) && !suppressed.has(node.id)) {
+            appendNode(node);
+        }
+    }
+
+    return {
+        nodes: output,
+        syntheticEdges,
+        groupCount,
+        hiddenSessionCount,
     };
 }
 
@@ -649,36 +1051,54 @@ export function layoutResponsiveConstellation(
         height = 600,
         completedExpanded = false,
         archivedExpanded = false,
+        selectedId,
+        expandedGroupIds = [],
+        groupingThreshold = defaultGroupingThreshold,
+        minimumGroupSize = defaultMinimumGroupSize,
     } = {}
 ) {
     const stageWidth = Math.max(280, Number(width) || 960);
     const stageHeight = Math.max(320, Number(height) || 600);
+    const protectedIds = buildProtectedRevealSet(state.nodes ?? [], {
+        rootId: state.rootId,
+        currentSessionId: state.currentSessionId,
+        selectedId,
+        directMatchIds: state.visibility?.directMatchIds,
+        focusIds: state.visibility?.focusIds,
+    });
     const { visible, completedCount, archivedCount } = visibleTree(
         state.nodes ?? [],
         state.rootId,
         state.currentSessionId,
         completedExpanded,
-        archivedExpanded
+        archivedExpanded,
+        protectedIds
     );
-    const { children } = childMap(visible);
-    const leafCount = visible.filter(
+    const grouped = groupDirectRepositorySiblings(visible, state.rootId, {
+        protectedIds,
+        expandedGroupIds,
+        groupingThreshold,
+        minimumGroupSize,
+    });
+    const { children } = childMap(grouped.nodes);
+    const leafCount = grouped.nodes.filter(
         (node) => !(children.get(node.id)?.length)
     ).length;
     const orientation = orientationForSize(stageWidth, stageHeight, {
-        nodeCount: visible.length,
+        nodeCount: grouped.nodes.length,
         leafCount,
     });
     const layout =
         orientation === "vertical"
             ? verticalLayout(
-                  visible,
+                  grouped.nodes,
                   state.rootId,
                   state.currentSessionId,
                   stageWidth,
                   stageHeight
               )
             : horizontalLayout(
-                  visible,
+                  grouped.nodes,
                   state.rootId,
                   state.currentSessionId,
                   stageWidth,
@@ -702,6 +1122,11 @@ export function layoutResponsiveConstellation(
             });
         }
     }
+    edges.push(
+        ...grouped.syntheticEdges.filter(
+            (edge) => ids.has(edge.source) && ids.has(edge.target)
+        )
+    );
     return {
         ...layout,
         edges,
@@ -709,6 +1134,9 @@ export function layoutResponsiveConstellation(
         archivedCount,
         completedExpanded,
         archivedExpanded,
+        groupCount: grouped.groupCount,
+        hiddenSessionCount: grouped.hiddenSessionCount,
+        protectedIds: [...protectedIds],
     };
 }
 
@@ -755,4 +1183,11 @@ export function applyPinchGesture({
     };
 }
 
-export { archivedShelfId, completedShelfId, filteredProjectRootId };
+export {
+    archivedShelfId,
+    completedShelfId,
+    defaultGroupingThreshold,
+    defaultMinimumGroupSize,
+    filteredProjectRootId,
+    repositoryGroupPrefix,
+};

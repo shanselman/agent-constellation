@@ -20,18 +20,28 @@ import {
 import {
     applyPinchGesture,
     archivedShelfId,
+    buildLineageFocusSet,
+    buildProtectedRevealSet,
     cardMarkerLayout,
     completedShelfId,
+    defaultGroupingThreshold,
+    defaultMinimumGroupSize,
     describeMeaningfulConstellationChange,
     filterConstellationView,
     filteredProjectRootId,
     fitWidthScale,
     formatModelLabel,
+    groupDirectRepositorySiblings,
     layoutResponsiveConstellation,
+    normalizeSearchQuery,
     orientationForSize,
     programmaticScrollBehavior,
     resolveVisibleSelection,
+    repositoryGroupId,
     resolveProjectFilter,
+    selectConstellationVisibility,
+    sessionMatchesSearch,
+    visualParentId,
 } from "./layout.mjs";
 import { renderConstellationHtml } from "./renderer.mjs";
 import {
@@ -242,6 +252,52 @@ function crossProjectFixtureState(scope = "tree") {
             scope,
         }
     );
+}
+
+function scalableFixtureState(
+    totalRealSessions = 121,
+    repositoryCount = 8,
+    scope = "tree"
+) {
+    const childCount = Math.max(0, totalRealSessions - 1);
+    const nodes = [
+        {
+            id: "scale-root",
+            name: "Scale coordinator",
+            projectName: "Scale project",
+            repository: "octo/coordinator",
+            status: "idle",
+        },
+        ...Array.from({ length: childCount }, (_, index) => ({
+            id: `scale-${index}`,
+            parentId: "scale-root",
+            name: `Scale session ${String(index).padStart(4, "0")}`,
+            projectName: "Scale project",
+            repository: `octo/repository-${String(
+                index % repositoryCount
+            ).padStart(2, "0")}`,
+            branch: `feature/${index}`,
+            task: index === 42 ? "Reveal search target" : undefined,
+            status:
+                index === 1
+                    ? "waiting-user"
+                    : index === 2
+                      ? "blocked"
+                      : index === 3
+                        ? "failed"
+                        : index === 0
+                          ? "busy"
+                          : "idle",
+        })),
+    ];
+    return normalizeConstellation(nodes, childCount ? "scale-0" : "scale-root", {
+        appDatabase: true,
+        sessionStore: true,
+        eventMetadata: true,
+        relationships: true,
+        projects: true,
+        scope,
+    });
 }
 
 test("normalization sanitizes metadata and layout is deterministic", () => {
@@ -844,6 +900,353 @@ test("cross-project project scopes remain rooted across refresh and reopen", asy
             closeConstellationServer(servers, "cross-all"),
         ]);
     }
+});
+
+test("search normalization matches only sanitized session metadata", () => {
+    assert.equal(
+        normalizeSearchQuery("  Café\\PR-42 / Waiting_User  "),
+        "cafe pr 42 waiting user"
+    );
+    assert.equal(normalizeSearchQuery("\u0000\u0007"), "");
+    const node = {
+        name: "Résumé review",
+        projectName: "Navigation",
+        repository: "octo/agent-tools",
+        branch: "feature/PR-42",
+        pullRequest: "#42",
+        task: "Keyboard focus",
+        provider: "github",
+        model: "gpt-5.6-sol",
+        reasoningEffort: "high",
+        status: "waiting-user",
+    };
+    assert.equal(sessionMatchesSearch(node, "resume pr 42"), true);
+    assert.equal(sessionMatchesSearch(node, "waiting attention"), true);
+    assert.equal(sessionMatchesSearch(node, "private prompt text"), false);
+    assert.equal(sessionMatchesSearch({ ...node, synthetic: true }, "resume"), false);
+});
+
+test("lineage focus follows real and synthetic visual parents safely", () => {
+    const source = normalizeConstellation(
+        [
+            {
+                id: "home",
+                name: "Home",
+                repository: "No project",
+                status: "idle",
+            },
+            {
+                id: "real-root",
+                name: "Real root",
+                repository: "octo/example",
+                status: "idle",
+            },
+            {
+                id: "real-child",
+                parentId: "real-root",
+                name: "Real child",
+                repository: "octo/example",
+                status: "busy",
+            },
+            {
+                id: "real-grandchild",
+                parentId: "real-child",
+                name: "Real grandchild",
+                repository: "octo/example",
+                status: "idle",
+            },
+        ],
+        "home",
+        { scope: "all" }
+    );
+    const focused = buildLineageFocusSet(source.nodes, "real-child");
+    assert.deepEqual(
+        [...focused].sort(),
+        [
+            overviewRootId,
+            "real-child",
+            "real-grandchild",
+            "real-root",
+        ].sort()
+    );
+    assert.equal(
+        visualParentId(source.nodes.find((node) => node.id === "real-root")),
+        overviewRootId
+    );
+
+    const cyclic = buildLineageFocusSet(
+        [
+            { id: "a", parentId: "b" },
+            { id: "b", parentId: "a" },
+            { id: "orphan", parentId: "missing" },
+        ],
+        "a"
+    );
+    assert.deepEqual([...cyclic].sort(), ["a", "b"]);
+    assert.deepEqual(
+        [...buildLineageFocusSet([{ id: "orphan", parentId: "missing" }], "orphan")],
+        ["orphan"]
+    );
+});
+
+test("search and focus share exact visibility, ancestry, no-match, and reset behavior", () => {
+    const source = scalableFixtureState(61, 4);
+    const searched = selectConstellationVisibility(source, {
+        search: "reveal target",
+    });
+    assert.equal(searched.visibility.directMatchCount, 1);
+    assert.equal(searched.visibility.noMatches, false);
+    assert.deepEqual(
+        searched.nodes.map((node) => node.id).sort(),
+        ["scale-42", "scale-root"]
+    );
+    assert.deepEqual(searched.edges, [
+        {
+            source: "scale-root",
+            target: "scale-42",
+            kind: "parent-child",
+            synthetic: false,
+        },
+    ]);
+
+    const focused = selectConstellationVisibility(source, {
+        focusSessionId: "scale-42",
+    });
+    assert.deepEqual(
+        focused.nodes.map((node) => node.id).sort(),
+        ["scale-42", "scale-root"]
+    );
+
+    const combined = selectConstellationVisibility(source, {
+        search: "repository 02",
+        focusSessionId: "scale-42",
+    });
+    assert.equal(combined.visibility.directMatchCount, 1);
+    assert.deepEqual(
+        combined.nodes.map((node) => node.id).sort(),
+        ["scale-42", "scale-root"]
+    );
+
+    const noMatches = selectConstellationVisibility(source, {
+        search: "definitely absent",
+    });
+    assert.equal(noMatches.visibility.noMatches, true);
+    assert.equal(noMatches.visibility.directMatchCount, 0);
+    assert.deepEqual(noMatches.nodes, []);
+    assert.deepEqual(noMatches.edges, []);
+
+    const reset = selectConstellationVisibility(source);
+    assert.equal(reset.nodes.length, source.nodes.length);
+    assert.equal(reset.visibility.query, "");
+    assert.equal(reset.visibility.noMatches, false);
+});
+
+test("protected reveal set includes matches, focus, selection, attention, and visual ancestry", () => {
+    const source = scalableFixtureState(61, 4, "all");
+    const protectedIds = buildProtectedRevealSet(source.nodes, {
+        rootId: source.rootId,
+        currentSessionId: source.currentSessionId,
+        selectedId: "scale-10",
+        directMatchIds: ["scale-42"],
+        focusIds: ["scale-20"],
+    });
+    for (const id of [
+        overviewRootId,
+        "scale-root",
+        "scale-0",
+        "scale-1",
+        "scale-2",
+        "scale-3",
+        "scale-10",
+        "scale-20",
+        "scale-42",
+    ]) {
+        assert.equal(protectedIds.has(id), true, `${id} should be protected`);
+    }
+});
+
+test("repository grouping has exact thresholds, boundaries, and deterministic ordering", () => {
+    const below = scalableFixtureState(defaultGroupingThreshold - 1, 1);
+    const belowGrouped = groupDirectRepositorySiblings(
+        below.nodes,
+        below.rootId,
+        {
+            groupingThreshold: defaultGroupingThreshold,
+            minimumGroupSize: defaultMinimumGroupSize,
+        }
+    );
+    assert.equal(belowGrouped.groupCount, 0);
+    assert.equal(belowGrouped.nodes.length, below.nodes.length);
+
+    const boundary = scalableFixtureState(defaultGroupingThreshold, 1);
+    const first = groupDirectRepositorySiblings(
+        boundary.nodes,
+        boundary.rootId,
+        {
+            groupingThreshold: defaultGroupingThreshold,
+            minimumGroupSize: defaultMinimumGroupSize,
+        }
+    );
+    const second = groupDirectRepositorySiblings(
+        [...boundary.nodes].reverse(),
+        boundary.rootId,
+        {
+            groupingThreshold: defaultGroupingThreshold,
+            minimumGroupSize: defaultMinimumGroupSize,
+        }
+    );
+    const groupId = repositoryGroupId(
+        "scale-root",
+        "octo/repository-00"
+    );
+    assert.equal(first.groupCount, 1);
+    assert.equal(first.hiddenSessionCount, defaultGroupingThreshold - 1);
+    assert.equal(first.nodes.some((node) => node.id === groupId), true);
+    assert.deepEqual(
+        first.nodes.map((node) => node.id),
+        second.nodes.map((node) => node.id)
+    );
+
+    const boundarySize = scalableFixtureState(defaultGroupingThreshold, 20);
+    const noMinimumGroup = groupDirectRepositorySiblings(
+        boundarySize.nodes,
+        boundarySize.rootId,
+        {
+            groupingThreshold: defaultGroupingThreshold,
+            minimumGroupSize: defaultMinimumGroupSize,
+        }
+    );
+    assert.equal(noMinimumGroup.groupCount, 0);
+});
+
+test("expanded repository groups persist and selection never dissolves them", () => {
+    const source = scalableFixtureState(81, 4);
+    const groupId = repositoryGroupId(
+        "scale-root",
+        "octo/repository-00"
+    );
+    const collapsed = layoutResponsiveConstellation(source, {
+        width: 480,
+        height: 900,
+    });
+    assert.equal(
+        collapsed.nodes.find((node) => node.id === groupId)?.groupExpanded,
+        false
+    );
+    assert.equal(collapsed.nodes.some((node) => node.id === "scale-4"), false);
+
+    const expandedIds = new Set([groupId]);
+    const expanded = layoutResponsiveConstellation(source, {
+        width: 480,
+        height: 900,
+        expandedGroupIds: expandedIds,
+    });
+    const rerendered = layoutResponsiveConstellation(source, {
+        width: 480,
+        height: 900,
+        selectedId: "scale-4",
+        expandedGroupIds: expandedIds,
+    });
+    for (const layout of [expanded, rerendered]) {
+        assert.equal(
+            layout.nodes.find((node) => node.id === groupId)?.groupExpanded,
+            true
+        );
+        assert.equal(layout.nodes.some((node) => node.id === "scale-4"), true);
+    }
+    assert.equal(expandedIds.has(groupId), true);
+});
+
+test("dense grouping keeps attention and searched sessions visible with real edges intact", () => {
+    const source = scalableFixtureState(121, 8);
+    const layout = layoutResponsiveConstellation(source, {
+        width: 480,
+        height: 900,
+    });
+    for (const id of ["scale-0", "scale-1", "scale-2", "scale-3"]) {
+        assert.equal(layout.nodes.some((node) => node.id === id), true);
+        assert.equal(
+            layout.edges.some(
+                (edge) =>
+                    edge.source === "scale-root" &&
+                    edge.target === id &&
+                    edge.kind === "parent-child" &&
+                    edge.synthetic === false
+            ),
+            true
+        );
+    }
+    assert.equal(layout.groupCount, 8);
+    assert.equal(layout.hiddenSessionCount, 116);
+
+    const searched = selectConstellationVisibility(source, {
+        search: "reveal target",
+    });
+    const searchLayout = layoutResponsiveConstellation(searched, {
+        width: 320,
+        height: 700,
+    });
+    assert.deepEqual(
+        searchLayout.nodes.map((node) => node.id).sort(),
+        ["scale-42", "scale-root"]
+    );
+});
+
+test("100+ session overview stays bounded at required pane widths in both orientations", () => {
+    const dense = scalableFixtureState(121, 8);
+    for (const width of [280, 320, 480, 700, 960]) {
+        const layout = layoutResponsiveConstellation(dense, {
+            width,
+            height: width === 960 ? 600 : 900,
+        });
+        assert.equal(layout.orientation, "vertical");
+        assert.equal(layout.width, Math.max(280, width));
+        assert.equal(layout.nodes.length <= 13, true);
+        assert.equal(layout.height <= 1200, true);
+        assert.equal(layout.hiddenSessionCount, 116);
+        for (const node of layout.nodes) {
+            assert.equal(node.x - layout.cardWidth / 2 >= 0, true);
+            assert.equal(node.x + layout.cardWidth / 2 <= layout.width, true);
+        }
+    }
+
+    const small = fixtureState();
+    const horizontal = layoutResponsiveConstellation(small, {
+        width: 960,
+        height: 600,
+    });
+    const vertical = layoutResponsiveConstellation(small, {
+        width: 480,
+        height: 700,
+    });
+    assert.equal(horizontal.orientation, "horizontal");
+    assert.equal(vertical.orientation, "vertical");
+});
+
+test("1,001-session layout benchmark reports bounded reduction", () => {
+    const source = scalableFixtureState(1001, 10);
+    const iterations = 50;
+    layoutResponsiveConstellation(source, { width: 480, height: 900 });
+    const startedAt = performance.now();
+    let layout;
+    for (let index = 0; index < iterations; index++) {
+        layout = layoutResponsiveConstellation(source, {
+            width: 480,
+            height: 900,
+        });
+    }
+    const averageMilliseconds = (performance.now() - startedAt) / iterations;
+    const visibleCards = layout.nodes.length;
+    const reductionPercent =
+        (1 - visibleCards / source.diagnostics.selectedRealSessionCount) * 100;
+    assert.equal(Number.isFinite(averageMilliseconds), true);
+    assert.equal(visibleCards <= 15, true);
+    assert.equal(reductionPercent >= 98, true);
+    console.log(
+        `benchmark: 1,001 sessions -> ${visibleCards} cards, ` +
+            `${reductionPercent.toFixed(1)}% reduction, ` +
+            `${averageMilliseconds.toFixed(2)} ms average`
+    );
 });
 
 test("responsive layout is right-pane-first across required breakpoints", () => {
@@ -1873,7 +2276,10 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     assert.match(html, /title\.textContent = "Runs locally"/);
     assert.match(html, /parts\.push\(node\.demoLocalModel \? "Demo local model" : "Local model"\)/);
     assert.match(html, /class: "node-model"/);
-    assert.match(html, /node\.isShelf\s*\?\s*""\s*:\s*formatModelLabel/);
+    assert.match(
+        html,
+        /node\.isShelf \|\| node\.isRepositoryGroup\s*\?\s*""\s*:\s*formatModelLabel/
+    );
     assert.match(html, /node\.isLocalModel && !node\.isShelf/);
     assert.match(html, /--local-model:/);
     assert.match(html, /\.model-detail/);
@@ -1893,6 +2299,8 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
         /archivedExpanded: config\.initialStatus === "archived"/
     );
     assert.match(html, /function toggleShelf\(node\)/);
+    assert.match(html, /function toggleRepositoryGroup\(node\)/);
+    assert.match(html, /"aria-expanded": node\.isRepositoryGroup/);
     assert.match(html, /id="fitWidth"/);
     assert.doesNotMatch(html, />Fit</);
 });
@@ -1947,6 +2355,45 @@ test("renderer preserves SVG focus across refreshes and exposes explicit focus r
         /if \(previousOrientation !== state\.layout\.orientation\) \{\s*centerCurrent\(\{ smooth: false \}\);\s*\}/
     );
     assert.match(html, /if \(restoreFocus && state\.selectedId\) focusNode\(state\.selectedId\)/);
+});
+
+test("renderer combines search, focus, grouping, and keyboard reset accessibly", () => {
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+        scopeUrl: "http://127.0.0.1/scope",
+    });
+    assert.match(html, /id="searchFocus"/);
+    assert.match(html, /id="searchInput"/);
+    assert.match(html, /id="showAll"/);
+    assert.match(html, /id="focusSelected"/);
+    assert.match(html, /selectConstellationVisibility\(filtered/);
+    assert.match(html, /expandedGroupIds: new Set\(\)/);
+    assert.match(html, /expandedGroupIds: state\.expandedGroupIds/);
+    assert.match(html, /repository group, " \+ node\.totalCount/);
+    assert.match(html, /"aria-expanded": node\.isRepositoryGroup/);
+    assert.match(html, /visualParentId\(node\)/);
+    assert.match(html, /event\.key === "PageUp"/);
+    assert.match(html, /event\.key === "PageDown"/);
+    assert.match(
+        html,
+        /if \(event\.key === "Home"\) \{\s*event\.preventDefault\(\);\s*event\.stopPropagation\(\);/
+    );
+    assert.match(
+        html,
+        /if \(event\.key === "Home"\) \{\s*if \(event\.ctrlKey\) return;\s*event\.preventDefault\(\);\s*homeCurrent\(\);/
+    );
+    assert.doesNotMatch(
+        html,
+        /event\.ctrlKey\s*&&\s*event\.key\.toLowerCase\(\)\s*===\s*"f"/
+    );
+    assert.doesNotMatch(
+        html,
+        /event\.key\.toLowerCase\(\)\s*===\s*"f"\s*&&\s*event\.ctrlKey/
+    );
+    assert.match(html, /event\.key === "\/"/);
+    assert.match(html, /Lineage focus cleared\. Search and filters remain active\./);
 });
 
 test("renderer honors reduced motion and forced colors with correct badge contrast", () => {
