@@ -16,6 +16,10 @@ import {
     stateFingerprint,
 } from "./data.mjs";
 import {
+    BRIEFING_SECTION_ORDER,
+    buildOperationalBriefing,
+} from "./briefing.mjs";
+import {
     applyPinchGesture,
     completedShelfId,
     fitWidthScale,
@@ -145,6 +149,285 @@ test("normalization sanitizes metadata and layout is deterministic", () => {
         ["busy-child", "root-session", "waiting-grandchild"]
     );
     assert.equal(layoutConstellation([], "missing").nodes.length, 0);
+});
+
+test("operational briefing has stable priority, ties, and exact mixed-status output", () => {
+    const now = "2026-09-25T20:00:00.000Z";
+    const briefing = buildOperationalBriefing(
+        {
+            nodes: [
+                {
+                    id: "busy-beta",
+                    name: "Beta",
+                    repository: "octo/core",
+                    status: "busy",
+                    busySince: "2026-09-25T19:00:00.000Z",
+                    updatedAt: "2026-09-25T19:30:00.000Z",
+                },
+                {
+                    id: "busy-alpha",
+                    name: "Alpha",
+                    repository: "octo/core",
+                    status: "busy",
+                    busySince: "2026-09-25T17:00:00.000Z",
+                    updatedAt: "2026-09-25T19:30:00.000Z",
+                },
+                {
+                    id: "plan",
+                    name: "Plan review",
+                    repository: "octo/core",
+                    status: "waiting-plan",
+                    humanGate: { label: "Plan approval required" },
+                    updatedAt: "2026-09-25T19:00:00.000Z",
+                },
+                {
+                    id: "user",
+                    name: "User choice",
+                    repository: "octo/docs",
+                    status: "waiting-user",
+                    humanGate: { label: "User response required" },
+                    updatedAt: "2026-09-25T18:00:00.000Z",
+                },
+                {
+                    id: "failed",
+                    name: "Failed check",
+                    repository: "octo/core",
+                    status: "failed",
+                    updatedAt: "2026-09-25T17:00:00.000Z",
+                },
+                {
+                    id: "blocked",
+                    name: "Permission gate",
+                    repository: "octo/docs",
+                    status: "blocked",
+                    humanGate: { label: "Permission decision required" },
+                    updatedAt: "2026-09-25T16:00:00.000Z",
+                },
+                {
+                    id: "recent",
+                    name: "Recent finish",
+                    repository: "octo/tools",
+                    status: "completed",
+                    updatedAt: "2026-09-25T19:45:00.000Z",
+                },
+                {
+                    id: "old",
+                    name: "Old finish",
+                    repository: "octo/tools",
+                    status: "completed",
+                    updatedAt: "2026-09-24T18:00:00.000Z",
+                },
+            ],
+            source: {
+                appDatabase: "available",
+                sessionStore: "available",
+                eventMetadata: "available",
+                limitations: [],
+            },
+        },
+        { now }
+    );
+
+    assert.deepEqual(Object.keys(briefing), [
+        "version",
+        "generatedAt",
+        "state",
+        "headline",
+        "coverage",
+        "sections",
+    ]);
+    assert.equal(briefing.version, 1);
+    assert.equal(briefing.generatedAt, now);
+    assert.equal(briefing.state, "multi");
+    assert.equal(briefing.headline, "2 active · 2 decisions · 1 failed · 1 blocked");
+    assert.deepEqual(briefing.coverage, {
+        level: "complete",
+        summary: "Based only on sanitized local operational metadata.",
+        unavailableSources: [],
+        limitations: [],
+    });
+    assert.deepEqual(
+        briefing.sections.map(({ id, label, priority, count }) => ({
+            id,
+            label,
+            priority,
+            count,
+        })),
+        [
+            { id: "active-work", label: "Active work", priority: 10, count: 2 },
+            { id: "decisions-needed", label: "Decisions needed", priority: 20, count: 2 },
+            { id: "failures", label: "Failures", priority: 30, count: 1 },
+            { id: "blocked-sessions", label: "Blocked sessions", priority: 40, count: 1 },
+            { id: "recent-completions", label: "Recent completions", priority: 50, count: 1 },
+            { id: "repository-spread", label: "Repository spread", priority: 60, count: 3 },
+            { id: "likely-bottlenecks", label: "Likely bottlenecks", priority: 70, count: 5 },
+        ]
+    );
+    assert.deepEqual(
+        briefing.sections.map((item) => item.id),
+        BRIEFING_SECTION_ORDER
+    );
+    assert.deepEqual(
+        briefing.sections[0].items.map((item) => item.key),
+        ["busy-alpha", "busy-beta"]
+    );
+    assert.deepEqual(briefing.sections[4].items, [
+        {
+            key: "recent",
+            label: "Recent finish",
+            detail: "octo/tools · completed 2026-09-25T19:45:00.000Z",
+        },
+    ]);
+    assert.deepEqual(
+        briefing.sections[6].items.map((item) => item.key),
+        [
+            "decision-queue",
+            "blocked-work",
+            "failed-work",
+            "long-running",
+            "repository:octo/core",
+        ]
+    );
+    assert.equal(
+        briefing.sections[2].summary,
+        "1 session has an unrecovered local failure signal."
+    );
+    assert.equal(
+        briefing.sections[3].summary,
+        "1 session reports an outstanding permission decision."
+    );
+    assert.equal(
+        briefing.sections[5].summary,
+        "3 repositories represented in the visible local state."
+    );
+    assert.equal(
+        briefing.sections[6].items.find((item) => item.key === "long-running").detail,
+        "1 busy session has run for at least 2 hours."
+    );
+
+    const normalized = fixtureState();
+    const laterBriefingTimestamp = structuredClone(normalized);
+    laterBriefingTimestamp.briefing.generatedAt = "2026-09-25T20:01:00.000Z";
+    assert.equal(stateFingerprint(normalized), stateFingerprint(laterBriefingTimestamp));
+});
+
+test("operational briefing handles empty, single-session, and unavailable-source states", () => {
+    const empty = buildOperationalBriefing(
+        {
+            nodes: [],
+            source: {
+                appDatabase: "unavailable",
+                sessionStore: "unavailable",
+                eventMetadata: "partial",
+                limitations: ["Status coverage is limited."],
+            },
+        },
+        { now: "2026-09-25T20:00:00.000Z" }
+    );
+    assert.equal(empty.state, "empty");
+    assert.equal(empty.headline, "No sessions are visible");
+    assert.deepEqual(empty.coverage, {
+        level: "partial",
+        summary:
+            "Partial local view: 3 metadata sources unavailable or incomplete; the briefing may omit work or misclassify status.",
+        unavailableSources: ["app database", "session store", "event metadata"],
+        limitations: ["Status coverage is limited."],
+    });
+    assert.deepEqual(
+        empty.sections.map((item) => item.count),
+        [0, 0, 0, 0, 0, 0, 0]
+    );
+    assert.match(empty.sections[6].summary, /No configured bottleneck threshold/);
+
+    const single = buildOperationalBriefing(
+        {
+            nodes: [
+                {
+                    id: "only",
+                    name: "Only session",
+                    repository: "octo/solo",
+                    status: "idle",
+                },
+            ],
+            source: {
+                appDatabase: "available",
+                sessionStore: "available",
+                eventMetadata: "available",
+            },
+        },
+        { now: "2026-09-25T20:00:00.000Z" }
+    );
+    assert.equal(single.state, "single");
+    assert.equal(single.headline, "1 session visible · no coordination spread");
+    assert.equal(single.sections[5].count, 1);
+    assert.equal(single.sections[6].count, 0);
+});
+
+test("bottleneck heuristics use explicit thresholds without speculative claims", () => {
+    const now = "2026-09-25T20:00:00.000Z";
+    const belowThreshold = buildOperationalBriefing(
+        {
+            nodes: [
+                {
+                    id: "busy",
+                    name: "Busy",
+                    repository: "octo/a",
+                    status: "busy",
+                    busySince: "2026-09-25T18:00:01.000Z",
+                },
+                {
+                    id: "decision",
+                    name: "Decision",
+                    repository: "octo/a",
+                    status: "waiting-user",
+                },
+            ],
+            source: {
+                appDatabase: "available",
+                sessionStore: "available",
+                eventMetadata: "available",
+            },
+        },
+        { now }
+    );
+    assert.equal(belowThreshold.sections[6].count, 0);
+
+    const atThreshold = buildOperationalBriefing(
+        {
+            nodes: [
+                {
+                    id: "busy",
+                    name: "Busy",
+                    repository: "octo/a",
+                    status: "busy",
+                    busySince: "2026-09-25T18:00:00.000Z",
+                },
+                {
+                    id: "decision-one",
+                    name: "Decision one",
+                    repository: "octo/a",
+                    status: "waiting-user",
+                },
+                {
+                    id: "decision-two",
+                    name: "Decision two",
+                    repository: "octo/a",
+                    status: "waiting-plan",
+                },
+            ],
+            source: {
+                appDatabase: "available",
+                sessionStore: "available",
+                eventMetadata: "available",
+            },
+        },
+        { now }
+    );
+    assert.deepEqual(
+        atThreshold.sections[6].items.map((item) => item.key),
+        ["decision-queue", "long-running", "repository:octo/a"]
+    );
+    assert.match(atThreshold.sections[6].summary, /indicators, not diagnoses/);
 });
 
 test("model labels use conservative humanization and optional reasoning effort", () => {
@@ -789,6 +1072,10 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     assert.match(html, /prefers-reduced-motion/);
     assert.match(html, /role="tree"/);
     assert.match(html, /Mission status counts/);
+    assert.match(html, /Mission briefing/);
+    assert.match(html, /id="briefingHeadline"/);
+    assert.match(html, /function renderBriefing/);
+    assert.match(html, /Partial local metadata/);
     assert.match(html, /CURRENT/);
     assert.match(html, /current session/);
     assert.match(html, /id="inspectorClose"/);

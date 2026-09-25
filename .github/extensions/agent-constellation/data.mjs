@@ -1,6 +1,7 @@
 import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { buildOperationalBriefing } from "./briefing.mjs";
 
 export const STATUSES = [
     "busy",
@@ -601,22 +602,28 @@ export function normalizeConstellation(rawNodes, currentSessionId, metadata = {}
     const layout = layoutConstellation(selected, rootId, currentId);
     const counts = Object.fromEntries(STATUSES.map((status) => [status, 0]));
     for (const node of layout.nodes) counts[node.status]++;
-    return {
+    const generatedAt = new Date().toISOString();
+    const source = {
+        appDatabase: metadata.appDatabase ? "available" : "unavailable",
+        sessionStore: metadata.sessionStore ? "available" : "unavailable",
+        eventMetadata: metadata.eventMetadata ? "available" : "partial",
+        limitations: Array.isArray(metadata.limitations)
+            ? metadata.limitations.map((item) => sanitizeText(item, 180)).filter(Boolean)
+            : [],
+    };
+    const state = {
         version: 1,
-        generatedAt: new Date().toISOString(),
+        generatedAt,
         rootId,
         currentSessionId: currentId,
         ...layout,
         counts,
         repositories: [...new Set(layout.nodes.map((node) => node.repository))].sort(),
-        source: {
-            appDatabase: metadata.appDatabase ? "available" : "unavailable",
-            sessionStore: metadata.sessionStore ? "available" : "unavailable",
-            eventMetadata: metadata.eventMetadata ? "available" : "partial",
-            limitations: Array.isArray(metadata.limitations)
-                ? metadata.limitations.map((item) => sanitizeText(item, 180)).filter(Boolean)
-                : [],
-        },
+        source,
+    };
+    return {
+        ...state,
+        briefing: buildOperationalBriefing(state, { now: generatedAt }),
     };
 }
 
@@ -695,6 +702,12 @@ export function stateFingerprint(state) {
             issue: node.issue,
         })),
         source: state.source,
+        briefing: state.briefing
+            ? {
+                  ...state.briefing,
+                  generatedAt: undefined,
+              }
+            : undefined,
     });
 }
 

@@ -54,7 +54,7 @@ export function renderConstellationHtml(config) {
     .app {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: auto auto minmax(0, 1fr);
+      grid-template-rows: auto auto auto minmax(0, 1fr);
       height: 100vh;
     }
     .chrome {
@@ -111,7 +111,7 @@ export function renderConstellationHtml(config) {
     .toolbar button { min-width: 30px; }
     .toolbar .text-control { min-width: auto; }
     .filters {
-      grid-row: 2;
+      grid-row: 3;
       display: none;
       align-items: center;
       gap: 8px;
@@ -130,12 +130,104 @@ export function renderConstellationHtml(config) {
     }
     select { min-width: 0; max-width: 240px; padding: 4px 24px 4px 7px; }
     .workspace {
-      grid-row: 3;
+      grid-row: 4;
       display: grid;
       grid-template-rows: minmax(0, 1fr) auto;
       min-width: 0;
       min-height: 0;
       position: relative;
+    }
+    .briefing {
+      grid-row: 2;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel-bg);
+    }
+    .briefing > summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      padding: 5px 9px;
+      cursor: pointer;
+      list-style: none;
+    }
+    .briefing > summary::-webkit-details-marker { display: none; }
+    .briefing > summary::before {
+      content: "›";
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1;
+      transform: rotate(0deg);
+      transition: transform 120ms ease;
+    }
+    .briefing[open] > summary::before { transform: rotate(90deg); }
+    .briefing-title {
+      font-weight: var(--font-weight-semibold, 600);
+      white-space: nowrap;
+    }
+    .briefing-headline {
+      min-width: 0;
+      color: var(--muted);
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .briefing-coverage {
+      margin-left: auto;
+      color: var(--muted);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .briefing-coverage.partial { color: var(--waiting); }
+    .briefing-body {
+      max-height: min(32vh, 280px);
+      overflow: auto;
+      padding: 0 9px 8px 34px;
+    }
+    .briefing-source {
+      margin: 0 0 7px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .briefing-sections {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 6px;
+    }
+    .briefing-section {
+      min-width: 0;
+      padding: 6px 7px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--card-bg);
+    }
+    .briefing-section h2 {
+      display: flex;
+      align-items: baseline;
+      gap: 5px;
+      margin: 0;
+      font-size: 12px;
+    }
+    .briefing-count {
+      color: var(--muted);
+      font-weight: var(--font-weight-normal, 400);
+    }
+    .briefing-section p {
+      margin: 3px 0 0;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .briefing-items {
+      margin: 5px 0 0;
+      padding-left: 17px;
+      font-size: 11px;
+    }
+    .briefing-items li + li { margin-top: 3px; }
+    .briefing-items span {
+      display: block;
+      color: var(--muted);
+      overflow-wrap: anywhere;
     }
     .stage {
       position: relative;
@@ -308,6 +400,9 @@ export function renderConstellationHtml(config) {
       .status-strip { order: 3; flex: 1 0 100%; }
       .status-strip button { font-size: 11px; }
       .toolbar .optional-label { display: none; }
+      .briefing-coverage { display: none; }
+      .briefing-body { padding-left: 9px; }
+      .briefing-sections { grid-template-columns: 1fr; }
       .filters.open { align-items: stretch; flex-direction: column; }
       .filters label { display: grid; grid-template-columns: 70px minmax(0, 1fr); }
       select { max-width: none; width: 100%; }
@@ -342,6 +437,17 @@ export function renderConstellationHtml(config) {
         <button id="filtersToggle" type="button" aria-expanded="false" aria-controls="filters">Filter</button>
       </div>
     </header>
+    <details class="briefing" id="briefing" open>
+      <summary>
+        <span class="briefing-title">Mission briefing</span>
+        <span class="briefing-headline" id="briefingHeadline">Loading sanitized local state…</span>
+        <span class="briefing-coverage" id="briefingCoverage"></span>
+      </summary>
+      <div class="briefing-body">
+        <p class="briefing-source" id="briefingSource"></p>
+        <div class="briefing-sections" id="briefingSections"></div>
+      </div>
+    </details>
     <section class="filters" id="filters" aria-label="Constellation filters">
       <label>Status
         <select id="statusFilter">
@@ -418,6 +524,8 @@ export function renderConstellationHtml(config) {
     const elements = Object.fromEntries([
       "summary", "refresh", "home", "fitWidth", "zoomOut", "zoomIn",
       "filtersToggle", "filters", "statusFilter", "repoFilter", "legend",
+      "briefing", "briefingHeadline", "briefingCoverage", "briefingSource",
+      "briefingSections",
       "stage", "constellation", "viewport", "edges", "nodes", "empty",
       "inspector", "inspectorClose", "detailName", "detailStatus", "details",
       "sourceNote", "live"
@@ -673,6 +781,60 @@ export function renderConstellationHtml(config) {
       state.repository = elements.repoFilter.value;
     }
 
+    function renderBriefing() {
+      const briefing = state.data?.briefing;
+      if (!briefing || !Array.isArray(briefing.sections)) {
+        elements.briefingHeadline.textContent = "Briefing unavailable";
+        elements.briefingCoverage.textContent = "Partial";
+        elements.briefingCoverage.className = "briefing-coverage partial";
+        elements.briefingSource.textContent =
+          "The sanitized local state did not include a briefing model.";
+        elements.briefingSections.replaceChildren();
+        return;
+      }
+      elements.briefingHeadline.textContent = briefing.headline;
+      elements.briefingCoverage.textContent =
+        briefing.coverage?.level === "complete" ? "Local metadata" : "Partial local metadata";
+      elements.briefingCoverage.className =
+        "briefing-coverage" + (briefing.coverage?.level === "partial" ? " partial" : "");
+      const notes = [
+        briefing.coverage?.summary,
+        ...(briefing.coverage?.limitations || [])
+      ].filter(Boolean);
+      elements.briefingSource.textContent = notes.join(" ");
+      elements.briefingSections.replaceChildren();
+      briefing.sections.forEach((briefingSection) => {
+        const article = document.createElement("article");
+        article.className = "briefing-section";
+        article.dataset.section = briefingSection.id;
+        const heading = document.createElement("h2");
+        const label = document.createElement("span");
+        label.textContent = briefingSection.label;
+        const count = document.createElement("span");
+        count.className = "briefing-count";
+        count.textContent = String(briefingSection.count);
+        heading.append(label, count);
+        const summary = document.createElement("p");
+        summary.textContent = briefingSection.summary;
+        article.append(heading, summary);
+        if (briefingSection.items?.length) {
+          const list = document.createElement("ul");
+          list.className = "briefing-items";
+          briefingSection.items.slice(0, 4).forEach((item) => {
+            const listItem = document.createElement("li");
+            const itemLabel = document.createElement("strong");
+            itemLabel.textContent = item.label;
+            const detail = document.createElement("span");
+            detail.textContent = item.detail;
+            listItem.append(itemLabel, detail);
+            list.appendChild(listItem);
+          });
+          article.appendChild(list);
+        }
+        elements.briefingSections.appendChild(article);
+      });
+    }
+
     function edgePath(edge, byId) {
       const source = byId.get(edge.source);
       const target = byId.get(edge.target);
@@ -882,6 +1044,7 @@ export function renderConstellationHtml(config) {
       renderEdges(byId);
       renderNodes();
       renderLegend();
+      renderBriefing();
       updateSummary();
       elements.empty.style.display = state.layout.nodes.length ? "none" : "grid";
       applyTransform();
