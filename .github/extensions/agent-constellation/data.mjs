@@ -34,6 +34,24 @@ const overviewRootId = "__agent_constellation_overview__";
 const statusPriority = new Map(STATUSES.map((status, index) => [status, index]));
 const localProviders = new Set(["ollama", "winml", "local"]);
 const localModelPrefix = /^(?:ollama|winml|local)[/:]/;
+const sourceStates = new Set([
+    "healthy",
+    "partial",
+    "unavailable",
+    "query-incompatible",
+]);
+const provenanceKinds = new Set([
+    "recorded",
+    "inferred",
+    "demo",
+    "unavailable",
+]);
+const provenanceSources = new Set([
+    "appDatabase",
+    "sessionStore",
+    "eventMetadata",
+    "demoDecoration",
+]);
 
 export function sanitizeText(value, maxLength = 180) {
     if (typeof value !== "string") return "";
@@ -53,6 +71,34 @@ export function isLocalModelMetadata({ provider, model } = {}) {
     );
 }
 
+export function normalizeSourceState(value, fallback = "unavailable") {
+    if (sourceStates.has(value)) return value;
+    if (value === true) return "healthy";
+    if (value === false) return "unavailable";
+    return sourceStates.has(fallback) ? fallback : "unavailable";
+}
+
+export function summarizeDatabaseCapability({
+    opened = false,
+    requiredTables = [],
+    optionalTables = [],
+} = {}) {
+    if (!opened) return "unavailable";
+    const required = Array.isArray(requiredTables) ? requiredTables : [];
+    const optional = Array.isArray(optionalTables) ? optionalTables : [];
+    if (
+        [...required, ...optional].some(
+            (status) => status === "incompatible"
+        ) ||
+        required.some((status) => status !== "ready")
+    ) {
+        return "query-incompatible";
+    }
+    return optional.some((status) => status !== "ready")
+        ? "partial"
+        : "healthy";
+}
+
 function parseTimestamp(value) {
     const timestamp = Date.parse(typeof value === "string" ? value : "");
     return Number.isFinite(timestamp) ? timestamp : 0;
@@ -67,30 +113,154 @@ function shortId(value) {
     return sanitizeText(value, 36).slice(0, 8) || "unknown";
 }
 
-function databaseRows(database, sql, parameters = []) {
+function queryDatabaseRows(database, sql, parameters = []) {
     try {
-        return database.prepare(sql).all(...parameters);
+        return {
+            ok: true,
+            rows: database.prepare(sql).all(...parameters),
+        };
     } catch {
-        return [];
+        return { ok: false, rows: [] };
     }
 }
 
 function databaseColumns(database, table) {
+    if (!/^[a-z_]+$/i.test(table)) return { ok: false, columns: new Set() };
+    const result = queryDatabaseRows(database, `PRAGMA table_info(${table})`);
+    return {
+        ok: result.ok,
+        columns: new Set(
+            result.rows
+                .map((row) => sanitizeText(row.name, 80))
+                .filter(Boolean)
+        ),
+    };
+}
+
+function inspectDatabaseTable(database, table, requiredColumns) {
+    if (!database) return "missing";
+    const tableResult = queryDatabaseRows(
+        database,
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        [table]
+    );
+    if (!tableResult.ok) return "incompatible";
+    if (!tableResult.rows[0]) return "missing";
+    const { ok, columns } = databaseColumns(database, table);
+    if (!ok) return "incompatible";
+    return requiredColumns.every((column) => columns.has(column))
+        ? "ready"
+        : "incompatible";
+}
+
+function databaseRows(database, sql, parameters = []) {
+    return queryDatabaseRows(database, sql, parameters).rows;
+}
+
+function optionalDatabaseColumn(database, table, column) {
+    const { ok, columns } = databaseColumns(database, table);
+    return ok && columns.has(column);
+}
+
+function provenanceSourcesFor(input) {
     return new Set(
-        databaseRows(database, `PRAGMA table_info(${table})`)
-            .map((row) => sanitizeText(row.name, 80))
-            .filter(Boolean)
+        Array.isArray(input?.sources)
+            ? input.sources.filter((item) => provenanceSources.has(item))
+            : []
     );
 }
 
-function databaseHasTable(database, table) {
-    return Boolean(
-        databaseRows(
-            database,
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-            [table]
-        )[0]
-    );
+function normalizedProvenanceField(input, fallbackKind = "unavailable") {
+    const sources = provenanceSourcesFor(input);
+    const kind = provenanceKinds.has(input?.kind)
+        ? input.kind
+        : provenanceKinds.has(fallbackKind)
+          ? fallbackKind
+          : "unavailable";
+    const source = provenanceSources.has(input?.source)
+        ? input.source
+        : undefined;
+    return {
+        kind,
+        ...(source ? { source } : {}),
+        ...(sources.size ? { sources: [...sources] } : {}),
+    };
+}
+
+function normalizeNodeProvenance(input, node) {
+    return {
+        relationship: normalizedProvenanceField(
+            input?.relationship,
+            node.parentId ? "recorded" : "unavailable"
+        ),
+        repository: normalizedProvenanceField(
+            input?.repository,
+            node.repository && node.repository !== "No project"
+                ? "recorded"
+                : "unavailable"
+        ),
+        branch: normalizedProvenanceField(
+            input?.branch,
+            node.branch ? "recorded" : "unavailable"
+        ),
+        model: normalizedProvenanceField(
+            input?.model,
+            node.model ? "recorded" : "unavailable"
+        ),
+        status: normalizedProvenanceField(input?.status, "inferred"),
+    };
+}
+
+export function selectRepositoryMetadata({
+    appRepository,
+    sessionStoreRepository,
+    projectRepository,
+    sessionStoreCwd,
+    projectPath,
+} = {}) {
+    const candidates = [
+        {
+            value: appRepository,
+            kind: "recorded",
+            source: "appDatabase",
+        },
+        {
+            value: sessionStoreRepository,
+            kind: "recorded",
+            source: "sessionStore",
+        },
+        {
+            value: projectRepository,
+            kind: "recorded",
+            source: "appDatabase",
+        },
+        {
+            value: sessionStoreCwd,
+            kind: "inferred",
+            source: "sessionStore",
+        },
+        {
+            value: projectPath,
+            kind: "inferred",
+            source: "appDatabase",
+        },
+    ];
+    for (const candidate of candidates) {
+        const label = repositoryLabel(candidate.value);
+        if (label) {
+            return {
+                label,
+                provenance: {
+                    kind: candidate.kind,
+                    source: candidate.source,
+                },
+            };
+        }
+    }
+    return {
+        label: "No project",
+        provenance: { kind: "unavailable" },
+    };
 }
 
 function openReadonlyDatabase(filePath) {
@@ -105,15 +275,21 @@ function openReadonlyDatabase(filePath) {
 function repositoryLabel(value) {
     const text = sanitizeText(value, 240).replaceAll("\\", "/").replace(/\.git$/i, "");
     if (!text) return "";
+    const pathSegments = text.split("/").filter(Boolean);
+    if (
+        /^[a-z]:\//i.test(text) ||
+        text.startsWith("/") ||
+        text.startsWith("//")
+    ) {
+        return pathSegments.at(-1) ?? "";
+    }
     try {
         const url = new URL(text);
         return url.pathname.replace(/^\/+/, "").replace(/\.git$/i, "").split("/").slice(-2).join("/");
     } catch {
-        const segments = text.split("/").filter(Boolean);
-        if (/^[a-z]:$/i.test(segments[0] ?? "")) {
-            return segments.at(-1) ?? "";
-        }
-        return segments.length > 2 ? segments.slice(-2).join("/") : segments.join("/");
+        return pathSegments.length > 2
+            ? pathSegments.slice(-2).join("/")
+            : pathSegments.join("/");
     }
 }
 
@@ -286,25 +462,124 @@ function readApplicationRows(appDatabase) {
             projects: [],
             repoContexts: [],
             activities: new Map(),
+            capability: "unavailable",
             availability: {
-                relationships: false,
-                projects: false,
+                relationships: "unavailable",
+                projects: "unavailable",
             },
         };
     }
-    const sessionColumns = databaseColumns(appDatabase, "sessions");
-    const providerSelection = sessionColumns.has("provider_id")
+    const tables = {
+        sessions: inspectDatabaseTable(appDatabase, "sessions", [
+            "id",
+            "mode",
+            "model",
+            "reasoning_effort",
+            "is_running",
+            "was_interrupted",
+            "created_at",
+            "updated_at",
+            "archived_at",
+            "forked_from_session_id",
+        ]),
+        workspaces: inspectDatabaseTable(appDatabase, "workspaces", [
+            "id",
+            "project_id",
+            "branch",
+            "name",
+            "session_id",
+            "archived_at",
+            "creator_session_id",
+            "coordinating_creator_session_id",
+            "source_pr_repo_full_name",
+            "source_pr_number",
+            "source_issue_repo_full_name",
+            "source_issue_number",
+            "created_pr_repo_full_name",
+            "created_pr_number",
+        ]),
+        aliases: inspectDatabaseTable(
+            appDatabase,
+            "workspace_session_aliases",
+            ["session_id", "workspace_id"]
+        ),
+        parents: inspectDatabaseTable(appDatabase, "workspace_parent_links", [
+            "child_workspace_id",
+            "parent_workspace_id",
+            "creator_session_id",
+        ]),
+        projects: inspectDatabaseTable(appDatabase, "projects", [
+            "id",
+            "name",
+            "github_owner",
+            "github_repo",
+            "main_repo_path",
+        ]),
+        repoContexts: inspectDatabaseTable(
+            appDatabase,
+            "workspace_repo_contexts",
+            [
+                "workspace_id",
+                "repo_full_name",
+                "source_pr_number",
+                "source_issue_number",
+                "created_pr_number",
+            ]
+        ),
+        activities: inspectDatabaseTable(appDatabase, "activity_items", [
+            "session_id",
+            "activity_type",
+            "updated_at",
+        ]),
+    };
+    const capability = summarizeDatabaseCapability({
+        opened: true,
+        requiredTables: [tables.sessions],
+        optionalTables: [
+            tables.workspaces,
+            tables.aliases,
+            tables.parents,
+            tables.projects,
+            tables.repoContexts,
+            tables.activities,
+        ],
+    });
+    if (tables.sessions !== "ready") {
+        return {
+            sessions: [],
+            workspaces: [],
+            aliases: [],
+            parents: [],
+            projects: [],
+            repoContexts: [],
+            activities: new Map(),
+            capability,
+            availability: {
+                relationships: "query-incompatible",
+                projects: "query-incompatible",
+            },
+        };
+    }
+    const providerSelection = optionalDatabaseColumn(
+        appDatabase,
+        "sessions",
+        "provider_id"
+    )
         ? "provider_id"
         : "NULL AS provider_id";
-    const sessionTypeSelection = sessionColumns.has("session_type")
+    const sessionTypeSelection = optionalDatabaseColumn(
+        appDatabase,
+        "sessions",
+        "session_type"
+    )
         ? "session_type"
         : "NULL AS session_type";
-    const hasWorkspaces = databaseHasTable(appDatabase, "workspaces");
-    const hasAliases = databaseHasTable(appDatabase, "workspace_session_aliases");
-    const hasParents = databaseHasTable(appDatabase, "workspace_parent_links");
-    const hasProjects = databaseHasTable(appDatabase, "projects");
-    const hasRepoContexts = databaseHasTable(appDatabase, "workspace_repo_contexts");
-    const hasActivities = databaseHasTable(appDatabase, "activity_items");
+    const hasWorkspaces = tables.workspaces === "ready";
+    const hasAliases = tables.aliases === "ready";
+    const hasParents = tables.parents === "ready";
+    const hasProjects = tables.projects === "ready";
+    const hasRepoContexts = tables.repoContexts === "ready";
+    const hasActivities = tables.activities === "ready";
     return {
         sessions: databaseRows(
             appDatabase,
@@ -342,44 +617,85 @@ function readApplicationRows(appDatabase) {
              FROM workspace_repo_contexts`
         ) : [],
         activities: hasActivities ? latestActivities(appDatabase) : new Map(),
+        capability,
         availability: {
-            relationships: hasWorkspaces && hasParents,
-            projects: hasWorkspaces && hasProjects,
+            relationships:
+                hasWorkspaces && hasParents
+                    ? "healthy"
+                    : [tables.workspaces, tables.parents].includes("incompatible")
+                      ? "query-incompatible"
+                      : "partial",
+            projects:
+                hasWorkspaces && hasProjects
+                    ? "healthy"
+                    : [tables.workspaces, tables.projects].includes("incompatible")
+                      ? "query-incompatible"
+                      : "partial",
         },
     };
 }
 
 function readSessionStoreRows(sessionStoreDatabase) {
-    if (!sessionStoreDatabase) return { sessions: new Map(), refs: new Map() };
-    const sessions = new Map();
-    for (const row of databaseRows(
+    if (!sessionStoreDatabase) {
+        return {
+            sessions: new Map(),
+            refs: new Map(),
+            capability: "unavailable",
+        };
+    }
+    const sessionTable = inspectDatabaseTable(sessionStoreDatabase, "sessions", [
+        "id",
+        "cwd",
+        "repository",
+        "branch",
+        "created_at",
+        "updated_at",
+    ]);
+    const refsTable = inspectDatabaseTable(
         sessionStoreDatabase,
-        `SELECT id, cwd, repository, branch, created_at, updated_at
-         FROM sessions
-         ORDER BY updated_at DESC
-         LIMIT 5000`
-    )) {
-        if (typeof row.id === "string" && !sessions.has(row.id)) sessions.set(row.id, row);
+        "session_refs",
+        ["session_id", "ref_type", "ref_value", "created_at"]
+    );
+    const capability = summarizeDatabaseCapability({
+        opened: true,
+        requiredTables: [sessionTable],
+        optionalTables: [refsTable],
+    });
+    const sessions = new Map();
+    if (sessionTable === "ready") {
+        for (const row of databaseRows(
+            sessionStoreDatabase,
+            `SELECT id, cwd, repository, branch, created_at, updated_at
+             FROM sessions
+             ORDER BY updated_at DESC
+             LIMIT 5000`
+        )) {
+            if (typeof row.id === "string" && !sessions.has(row.id)) {
+                sessions.set(row.id, row);
+            }
+        }
     }
     const refs = new Map();
-    for (const row of databaseRows(
-        sessionStoreDatabase,
-        `SELECT session_id, ref_type, ref_value, created_at
-         FROM session_refs
-         WHERE ref_type IN ('pr', 'issue', 'task')
-         ORDER BY created_at DESC
-         LIMIT 5000`
-    )) {
-        if (typeof row.session_id !== "string") continue;
-        if (!refs.has(row.session_id)) refs.set(row.session_id, []);
-        const items = refs.get(row.session_id);
-        if (items.length >= 8) continue;
-        items.push({
-            type: sanitizeText(row.ref_type, 20),
-            value: sanitizeText(row.ref_value, 180),
-        });
+    if (refsTable === "ready") {
+        for (const row of databaseRows(
+            sessionStoreDatabase,
+            `SELECT session_id, ref_type, ref_value, created_at
+             FROM session_refs
+             WHERE ref_type IN ('pr', 'issue', 'task')
+             ORDER BY created_at DESC
+             LIMIT 5000`
+        )) {
+            if (typeof row.session_id !== "string") continue;
+            if (!refs.has(row.session_id)) refs.set(row.session_id, []);
+            const items = refs.get(row.session_id);
+            if (items.length >= 8) continue;
+            items.push({
+                type: sanitizeText(row.ref_type, 20),
+                value: sanitizeText(row.ref_value, 180),
+            });
+        }
     }
-    return { sessions, refs };
+    return { sessions, refs, capability };
 }
 
 function referenceDetails(workspace, repoContext, storeRefs) {
@@ -444,18 +760,22 @@ function buildRawNodes(rows, store, sessionStateRoot) {
             undefined;
         const sessionType = sanitizeText(sessionRow.session_type, 40);
         const isHomeChat = sessionType === "general_chat";
-        const repository =
-            repositoryLabel(
+        const repositoryMetadata = selectRepositoryMetadata({
+            appRepository:
                 repoContext?.repo_full_name ||
-                    workspace?.source_pr_repo_full_name ||
-                    workspace?.source_issue_repo_full_name ||
-                    workspace?.created_pr_repo_full_name ||
-                    (project?.github_owner && project?.github_repo
-                        ? `${project.github_owner}/${project.github_repo}`
-                        : "") ||
-                    storeRow?.repository ||
-                    project?.main_repo_path
-            ) || "No project";
+                workspace?.source_pr_repo_full_name ||
+                workspace?.source_issue_repo_full_name ||
+                workspace?.created_pr_repo_full_name,
+            sessionStoreRepository: storeRow?.repository,
+            projectRepository:
+                project?.github_owner && project?.github_repo
+                    ? `${project.github_owner}/${project.github_repo}`
+                    : "",
+            sessionStoreCwd: storeRow?.cwd,
+            projectPath: project?.main_repo_path,
+        });
+        const appBranch = workspace?.branch;
+        const storeBranch = storeRow?.branch;
         const events = readEventTail(sessionStateRoot, sessionRow.id);
         const statusDetails = deriveStatus(sessionRow, events, rows.activities.get(sessionRow.id));
         const refs = referenceDetails(workspace, repoContext, store.refs.get(sessionRow.id) ?? []);
@@ -472,8 +792,8 @@ function buildRawNodes(rows, store, sessionStateRoot) {
             name:
                 sanitizeText(workspace?.name, 140) ||
                 (isHomeChat ? "Home chat" : `Standalone session ${shortId(sessionRow.id)}`),
-            repository,
-            branch: sanitizeText(workspace?.branch || storeRow?.branch, 180) || undefined,
+            repository: repositoryMetadata.label,
+            branch: sanitizeText(appBranch || storeBranch, 180) || undefined,
             mode: sanitizeText(sessionRow.mode, 30) || undefined,
             provider: sanitizeText(sessionRow.provider_id, 80) || undefined,
             model: sanitizeText(sessionRow.model, 100) || undefined,
@@ -484,6 +804,28 @@ function buildRawNodes(rows, store, sessionStateRoot) {
                     ? new Date(events.lastActivityAt).toISOString()
                     : sessionRow.updated_at || storeRow?.updated_at
             ),
+            provenance: {
+                relationship: {
+                    kind: parentSessionId ? "recorded" : "unavailable",
+                    ...(parentSessionId ? { source: "appDatabase" } : {}),
+                },
+                repository: repositoryMetadata.provenance,
+                branch: appBranch
+                    ? { kind: "recorded", source: "appDatabase" }
+                    : storeBranch
+                      ? { kind: "recorded", source: "sessionStore" }
+                      : { kind: "unavailable" },
+                model: sessionRow.model
+                    ? { kind: "recorded", source: "appDatabase" }
+                    : { kind: "unavailable" },
+                status: {
+                    kind: "inferred",
+                    sources: [
+                        "appDatabase",
+                        ...(events.available ? ["eventMetadata"] : []),
+                    ],
+                },
+            },
             ...refs,
             ...statusDetails,
         });
@@ -494,17 +836,34 @@ function buildRawNodes(rows, store, sessionStateRoot) {
 function fallbackRoot(currentSessionId, store, sessionStateRoot) {
     const row = store.sessions.get(currentSessionId);
     const events = readEventTail(sessionStateRoot, currentSessionId);
+    const repositoryMetadata = selectRepositoryMetadata({
+        sessionStoreRepository: row?.repository,
+        sessionStoreCwd: row?.cwd,
+    });
+    const branch = sanitizeText(row?.branch, 180) || undefined;
     return {
         id: currentSessionId,
         name: `Current session ${shortId(currentSessionId)}`,
-        repository: repositoryLabel(row?.repository || row?.cwd) || "No project",
+        repository: repositoryMetadata.label,
         projectName: "No project",
-        branch: sanitizeText(row?.branch, 180) || undefined,
+        branch,
         createdAt: isoTimestamp(row?.created_at),
         updatedAt: isoTimestamp(
             events.lastActivityAt ? new Date(events.lastActivityAt).toISOString() : row?.updated_at
         ),
         status: "idle",
+        provenance: {
+            relationship: { kind: "unavailable" },
+            repository: repositoryMetadata.provenance,
+            branch: branch
+                ? { kind: "recorded", source: "sessionStore" }
+                : { kind: "unavailable" },
+            model: { kind: "unavailable" },
+            status: {
+                kind: "inferred",
+                sources: events.available ? ["eventMetadata"] : [],
+            },
+        },
     };
 }
 
@@ -636,6 +995,31 @@ export function layoutConstellation(nodes, rootId, currentSessionId = rootId) {
     return { nodes: laidOutNodes, edges, width, height };
 }
 
+export function summarizeRelationshipCoverage(nodes = [], edges = []) {
+    const realNodes = nodes.filter((node) => !node.synthetic);
+    return {
+        selectedSessions: realNodes.length,
+        sessionsWithRecordedParent: realNodes.filter((node) => node.parentId)
+            .length,
+        recordedEdges: edges.filter((edge) => !edge.synthetic).length,
+        syntheticDisplayEdges: edges.filter((edge) => edge.synthetic).length,
+    };
+}
+
+export function diagnosticsLevel(diagnostics = {}) {
+    if (diagnostics.refresh?.status === "degraded") return "degraded";
+    return (
+        Object.values(diagnostics.sources ?? {}).some(
+            (source) => source?.status !== "healthy"
+        ) ||
+        Object.values(diagnostics.capabilities ?? {}).some(
+            (status) => status !== "healthy"
+        )
+    )
+        ? "limited"
+        : "healthy";
+}
+
 export function normalizeConstellation(rawNodes, currentSessionId, metadata = {}) {
     const currentId = sanitizeText(currentSessionId, 80);
     const requestedScope = metadata.scope === "all" ? "all" : "tree";
@@ -646,7 +1030,7 @@ export function normalizeConstellation(rawNodes, currentSessionId, metadata = {}
         const status = STATUSES.includes(input.status) ? input.status : "idle";
         const provider = sanitizeText(input.provider, 80) || undefined;
         const model = sanitizeText(input.model, 100) || undefined;
-        unique.set(id, {
+        const node = {
             id,
             parentId: sanitizeText(input.parentId, 80) || undefined,
             workspaceId: sanitizeText(input.workspaceId, 80) || undefined,
@@ -677,10 +1061,12 @@ export function normalizeConstellation(rawNodes, currentSessionId, metadata = {}
             status,
             nodeType: "session",
             synthetic: false,
-        });
+        };
+        node.provenance = normalizeNodeProvenance(input.provenance, node);
+        unique.set(id, node);
     }
     if (!unique.has(currentId)) {
-        unique.set(currentId, {
+        const node = {
             id: currentId,
             name: `Current session ${shortId(currentId)}`,
             repository: "No project",
@@ -688,7 +1074,9 @@ export function normalizeConstellation(rawNodes, currentSessionId, metadata = {}
             status: "idle",
             nodeType: "session",
             synthetic: false,
-        });
+        };
+        node.provenance = normalizeNodeProvenance(undefined, node);
+        unique.set(currentId, node);
     }
     const totalDiscoveredSessionCount = unique.size;
     const treeRootId = topmostAccessibleAncestor(currentId, unique);
@@ -729,9 +1117,104 @@ export function normalizeConstellation(rawNodes, currentSessionId, metadata = {}
     independentRealRootCount ??= selectedRealNodes.filter(
         (node) => !node.parentId || !selectedRealIds.has(node.parentId)
     ).length;
+    const generatedAt = new Date().toISOString();
+    const appDatabase = normalizeSourceState(metadata.appDatabase);
+    const sessionStore = normalizeSourceState(metadata.sessionStore);
+    const eventMetadata = normalizeSourceState(metadata.eventMetadata, "partial");
+    const relationships = normalizeSourceState(metadata.relationships, "partial");
+    const projects = normalizeSourceState(metadata.projects, "partial");
+    const eventObserved = Math.max(
+        0,
+        Math.min(
+            selectedRealNodes.length,
+            Number.isFinite(metadata.eventSessionsObserved)
+                ? Math.floor(metadata.eventSessionsObserved)
+                : eventMetadata === "healthy"
+                  ? selectedRealNodes.length
+                  : 0
+        )
+    );
+    const limitations = Array.isArray(metadata.limitations)
+        ? metadata.limitations
+              .map((item) => sanitizeText(item, 180))
+              .filter(Boolean)
+        : [];
+    const diagnostics = {
+        requestedScope,
+        effectiveScope: requestedScope,
+        selectedRealSessionCount: selectedRealNodes.length,
+        totalDiscoveredSessionCount,
+        independentRealRootCount,
+        sources: {
+            appDatabase: {
+                label: "App database",
+                status: appDatabase,
+                provides:
+                    "Session identity, app state, projects, models, and recorded relationships.",
+            },
+            sessionStore: {
+                label: "Session store",
+                status: sessionStore,
+                provides:
+                    "Recorded repository, branch, and reference metadata with safe fallbacks.",
+            },
+            eventMetadata: {
+                label: "Event metadata",
+                status: eventMetadata,
+                provides:
+                    "Bounded operational timing and human-gate signals used for status inference.",
+            },
+        },
+        capabilities: {
+            relationships,
+            projects,
+        },
+        coverage: {
+            events: {
+                observedSessions: eventObserved,
+                selectedSessions: selectedRealNodes.length,
+            },
+            relationships: summarizeRelationshipCoverage(
+                layout.nodes,
+                layout.edges
+            ),
+        },
+        provenance: {
+            recorded:
+                "Repository, branch, model, and relationship fields identify their recorded local source.",
+            inferred:
+                "Session status is derived from the operational signals currently available.",
+            synthetic:
+                "Dashed containment and repository-group edges are display-only and never recorded lineage.",
+        },
+        demo: {
+            active: false,
+            kind: "none",
+            scope: "None",
+        },
+        refresh: {
+            status: "healthy",
+            usingLastGood: false,
+            consecutiveFailures: 0,
+            lastSuccessfulAt: generatedAt,
+        },
+        visibility: {
+            repositoryFilter: {
+                enforcement: "display",
+                active: false,
+            },
+            projectFilter: {
+                enforcement: "display",
+                active: false,
+            },
+        },
+        limitations,
+        privacy:
+            "Sanitized operational metadata only; prompts, messages, secrets, raw errors, event payloads, database paths, tool arguments, and file contents are not returned.",
+    };
     return {
-        version: 2,
-        generatedAt: new Date().toISOString(),
+        version: 3,
+        generatedAt,
         rootId,
         currentSessionId: currentId,
         ...layout,
@@ -751,21 +1234,8 @@ export function normalizeConstellation(rawNodes, currentSessionId, metadata = {}
             ).values(),
         ].sort((left, right) => left.name.localeCompare(right.name)),
         diagnostics: {
-            requestedScope,
-            effectiveScope: requestedScope,
-            selectedRealSessionCount: selectedRealNodes.length,
-            totalDiscoveredSessionCount,
-            independentRealRootCount,
-        },
-        source: {
-            appDatabase: metadata.appDatabase ? "available" : "unavailable",
-            sessionStore: metadata.sessionStore ? "available" : "unavailable",
-            eventMetadata: metadata.eventMetadata ? "available" : "partial",
-            relationships: metadata.relationships ? "available" : "partial",
-            projects: metadata.projects ? "available" : "partial",
-            limitations: Array.isArray(metadata.limitations)
-                ? metadata.limitations.map((item) => sanitizeText(item, 180)).filter(Boolean)
-                : [],
+            ...diagnostics,
+            level: diagnosticsLevel(diagnostics),
         },
     };
 }
@@ -781,9 +1251,25 @@ export function decorateConstellationForDemo(state) {
                   reasoningEffort: "high",
                   isLocalModel: true,
                   demoLocalModel: true,
+                  provenance: {
+                      ...node.provenance,
+                      model: {
+                          kind: "demo",
+                          source: "demoDecoration",
+                      },
+                  },
               }
             : node
     );
+    decorated.diagnostics = {
+        ...decorated.diagnostics,
+        demo: {
+            active: true,
+            kind: "decoration",
+            scope: "Current session model presentation only.",
+        },
+    };
+    decorated.diagnostics.level = diagnosticsLevel(decorated.diagnostics);
     return decorated;
 }
 
@@ -795,10 +1281,21 @@ export function filterConstellationState(state, input = {}) {
 }
 
 export function stateFingerprint(state) {
+    const refresh = state.diagnostics?.refresh;
     return JSON.stringify({
         rootId: state.rootId,
         currentSessionId: state.currentSessionId,
-        diagnostics: state.diagnostics,
+        diagnostics: {
+            ...state.diagnostics,
+            refresh: refresh
+                ? {
+                      ...refresh,
+                      lastSuccessfulAt: undefined,
+                      consecutiveFailures:
+                          refresh.status === "degraded" ? 1 : 0,
+                  }
+                : undefined,
+        },
         nodes: state.nodes.map((node) => ({
             id: node.id,
             parentId: node.parentId,
@@ -824,8 +1321,8 @@ export function stateFingerprint(state) {
             task: node.task,
             pullRequest: node.pullRequest,
             issue: node.issue,
+            provenance: node.provenance,
         })),
-        source: state.source,
     });
 }
 
@@ -847,29 +1344,63 @@ export function collectConstellationState({
         const store = readSessionStoreRows(sessionStoreDatabase);
         const rawNodes = buildRawNodes(rows, store, sessionStateRoot);
         if (!rawNodes.has(sessionId)) rawNodes.set(sessionId, fallbackRoot(sessionId, store, sessionStateRoot));
-        const hasEventMetadata = [...rawNodes.keys()].some((id) =>
-            existsSync(path.join(sessionStateRoot, id, "events.jsonl"))
-        );
+        const selectedNodes =
+            scope === "all"
+                ? [...rawNodes.values()]
+                : descendantsOf(
+                      topmostAccessibleAncestor(sessionId, rawNodes),
+                      rawNodes
+                  );
+        const eventSessionsObserved = selectedNodes.filter((node) =>
+            node.provenance?.status?.sources?.includes("eventMetadata")
+        ).length;
+        const eventMetadata =
+            eventSessionsObserved === 0
+                ? "unavailable"
+                : eventSessionsObserved === selectedNodes.length
+                  ? "healthy"
+                  : "partial";
         const limitations = [];
-        if (!appDatabase) {
+        if (rows.capability === "unavailable") {
             limitations.push("Project relationships and live app status are unavailable.");
+        } else if (rows.capability === "query-incompatible") {
+            limitations.push(
+                "The app database opened, but expected tables or columns are incompatible."
+            );
+        } else if (rows.capability === "partial") {
+            limitations.push(
+                "Some optional app database tables are unavailable, so project or relationship detail may be partial."
+            );
         }
-        if (!sessionStoreDatabase) {
+        if (store.capability === "unavailable") {
             limitations.push("Repository, branch, and reference fallback metadata are unavailable.");
+        } else if (store.capability === "query-incompatible") {
+            limitations.push(
+                "The session store opened, but expected tables or columns are incompatible."
+            );
+        } else if (store.capability === "partial") {
+            limitations.push(
+                "Some optional session-store reference metadata is unavailable."
+            );
         }
-        if (!hasEventMetadata) {
+        if (eventMetadata === "unavailable") {
             limitations.push("Busy timing and human-gate inference are limited.");
+        } else if (eventMetadata === "partial") {
+            limitations.push(
+                "Busy timing and human-gate inference are available for only some selected sessions."
+            );
         }
-        if (!rows.availability.relationships) {
+        if (rows.availability.relationships !== "healthy") {
             limitations.push("Parent-child relationships may be incomplete.");
         }
-        if (!rows.availability.projects) {
+        if (rows.availability.projects !== "healthy") {
             limitations.push("Project grouping metadata may be incomplete.");
         }
         return normalizeConstellation([...rawNodes.values()], sessionId, {
-            appDatabase: Boolean(appDatabase),
-            sessionStore: Boolean(sessionStoreDatabase),
-            eventMetadata: hasEventMetadata,
+            appDatabase: rows.capability,
+            sessionStore: store.capability,
+            eventMetadata,
+            eventSessionsObserved,
             relationships: rows.availability.relationships,
             projects: rows.availability.projects,
             scope,

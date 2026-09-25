@@ -10,12 +10,17 @@ import {
     FILTER_PROPERTIES,
     collectConstellationState,
     decorateConstellationForDemo,
+    diagnosticsLevel,
     filterConstellationState,
     isLocalModelMetadata,
     layoutConstellation,
     normalizeConstellation,
+    normalizeSourceState,
     overviewRootId,
+    selectRepositoryMetadata,
     stateFingerprint,
+    summarizeDatabaseCapability,
+    summarizeRelationshipCoverage,
 } from "./data.mjs";
 import {
     applyPinchGesture,
@@ -53,6 +58,7 @@ import {
     closeConstellationServer,
     getOrCreateConstellationServer,
     refreshConstellationServer,
+    withRefreshHealth,
 } from "./server.mjs";
 
 const extensionDir = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, "$1"));
@@ -387,6 +393,26 @@ test("normalization sanitizes metadata and layout is deterministic", () => {
             },
         ]
     );
+    assert.equal(first.version, 3);
+    assert.equal(
+        first.nodes.find((node) => node.id === "root-session").provenance
+            .repository.kind,
+        "recorded"
+    );
+    assert.equal(
+        first.nodes.find((node) => node.id === "busy-child").provenance.status
+            .kind,
+        "inferred"
+    );
+    assert.equal(first.diagnostics.sources.appDatabase.status, "healthy");
+    assert.equal(first.diagnostics.sources.sessionStore.status, "healthy");
+    assert.deepEqual(first.diagnostics.coverage.relationships, {
+        selectedSessions: 3,
+        sessionsWithRecordedParent: 2,
+        recordedEdges: 2,
+        syntheticDisplayEdges: 0,
+    });
+    assert.equal(first.diagnostics.level, "healthy");
 
     const filtered = filterConstellationState(first, { status: "waiting-user" });
     assert.deepEqual(
@@ -473,6 +499,70 @@ test("local model classification requires explicit provider or runtime prefixes"
     assert.equal(isLocalModelMetadata({ provider: "", model: "" }), false);
 });
 
+test("source capability helpers distinguish healthy, partial, unavailable, and incompatible", () => {
+    assert.equal(normalizeSourceState(true), "healthy");
+    assert.equal(normalizeSourceState(false), "unavailable");
+    assert.equal(normalizeSourceState("partial"), "partial");
+    assert.equal(
+        summarizeDatabaseCapability({
+            opened: true,
+            requiredTables: ["ready"],
+            optionalTables: ["ready"],
+        }),
+        "healthy"
+    );
+    assert.equal(
+        summarizeDatabaseCapability({
+            opened: true,
+            requiredTables: ["ready"],
+            optionalTables: ["missing"],
+        }),
+        "partial"
+    );
+    assert.equal(
+        summarizeDatabaseCapability({
+            opened: true,
+            requiredTables: ["incompatible"],
+        }),
+        "query-incompatible"
+    );
+    assert.equal(
+        summarizeDatabaseCapability({
+            opened: false,
+            requiredTables: ["ready"],
+        }),
+        "unavailable"
+    );
+});
+
+test("recorded session-store repository outranks filesystem fallbacks", () => {
+    assert.deepEqual(
+        selectRepositoryMetadata({
+            sessionStoreRepository: "octo/recorded",
+            projectPath: "D:\\private\\fallback-project",
+        }),
+        {
+            label: "octo/recorded",
+            provenance: {
+                kind: "recorded",
+                source: "sessionStore",
+            },
+        }
+    );
+    assert.deepEqual(
+        selectRepositoryMetadata({
+            projectPath: "D:\\private\\fallback-project",
+        }),
+        {
+            label: "fallback-project",
+            provenance: {
+                kind: "inferred",
+                source: "appDatabase",
+            },
+        }
+    );
+});
+
 test("demo decoration clones state and changes only the current session", () => {
     const source = fixtureState();
     const decorated = decorateConstellationForDemo(source);
@@ -488,6 +578,15 @@ test("demo decoration clones state and changes only the current session", () => 
     assert.equal(current.reasoningEffort, "high");
     assert.equal(current.isLocalModel, true);
     assert.equal(current.demoLocalModel, true);
+    assert.deepEqual(current.provenance.model, {
+        kind: "demo",
+        source: "demoDecoration",
+    });
+    assert.deepEqual(decorated.diagnostics.demo, {
+        active: true,
+        kind: "decoration",
+        scope: "Current session model presentation only.",
+    });
     for (const node of decorated.nodes.filter((node) => node.id !== decorated.currentSessionId)) {
         assert.equal(node.demoLocalModel, undefined);
     }
@@ -544,12 +643,66 @@ test("collector remains compatible when provider metadata is unavailable", () =>
         assert.equal(current.isLocalModel, false);
         assert.equal(current.name.startsWith("Standalone session"), true);
         assert.equal(current.repository, "No project");
-        assert.equal(state.source.relationships, "partial");
-        assert.equal(state.source.projects, "partial");
-        assert.match(state.source.limitations.join(" "), /relationships may be incomplete/i);
-        assert.match(state.source.limitations.join(" "), /Project grouping metadata may be incomplete/i);
+        assert.equal(state.diagnostics.sources.appDatabase.status, "partial");
+        assert.equal(state.diagnostics.sources.sessionStore.status, "unavailable");
+        assert.equal(state.diagnostics.sources.eventMetadata.status, "unavailable");
+        assert.equal(state.diagnostics.capabilities.relationships, "partial");
+        assert.equal(state.diagnostics.capabilities.projects, "partial");
+        assert.equal(state.diagnostics.level, "limited");
+        assert.match(
+            state.diagnostics.limitations.join(" "),
+            /relationships may be incomplete/i
+        );
+        assert.match(
+            state.diagnostics.limitations.join(" "),
+            /Project grouping metadata may be incomplete/i
+        );
     } finally {
         app.close();
+        rmSync(scratch, { recursive: true, force: true });
+    }
+});
+
+test("opened databases with incompatible schemas are not reported healthy", () => {
+    const scratch = path.join(extensionDir, `.test-artifacts-${randomUUID()}`);
+    const appPath = path.join(scratch, "data.db");
+    const storePath = path.join(scratch, "session-store.db");
+    mkdirSync(scratch, { recursive: true });
+    const app = new DatabaseSync(appPath);
+    const store = new DatabaseSync(storePath);
+    try {
+        app.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY);");
+        store.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY);");
+        app.close();
+        store.close();
+        const state = collectConstellationState({
+            currentSessionId: "current",
+            appDatabasePath: appPath,
+            sessionStorePath: storePath,
+            sessionStateRoot: path.join(scratch, "session-state"),
+        });
+        assert.equal(
+            state.diagnostics.sources.appDatabase.status,
+            "query-incompatible"
+        );
+        assert.equal(
+            state.diagnostics.sources.sessionStore.status,
+            "query-incompatible"
+        );
+        assert.equal(state.diagnostics.level, "limited");
+        assert.match(
+            state.diagnostics.limitations.join(" "),
+            /opened, but expected tables or columns are incompatible/i
+        );
+        assert.equal(JSON.stringify(state).includes(appPath), false);
+        assert.equal(JSON.stringify(state).includes(storePath), false);
+    } finally {
+        try {
+            app.close();
+        } catch {}
+        try {
+            store.close();
+        } catch {}
         rmSync(scratch, { recursive: true, force: true });
     }
 });
@@ -693,6 +846,12 @@ test("all scope preserves real lineage and groups independent roots syntheticall
     assert.equal(all.diagnostics.selectedRealSessionCount, rawNodes.length);
     assert.equal(all.diagnostics.totalDiscoveredSessionCount, rawNodes.length);
     assert.equal(all.diagnostics.independentRealRootCount, 5);
+    assert.deepEqual(all.diagnostics.coverage.relationships, {
+        selectedSessions: rawNodes.length,
+        sessionsWithRecordedParent: 2,
+        recordedEdges: 1,
+        syntheticDisplayEdges: 5,
+    });
     assert.equal(Object.values(all.counts).reduce((sum, count) => sum + count, 0), rawNodes.length);
     assert.equal(all.nodes.find((node) => node.id === overviewRootId).synthetic, true);
     assert.equal(all.nodes.find((node) => node.id === "project-a-child").parentId, "project-a-root");
@@ -726,6 +885,19 @@ test("all scope preserves real lineage and groups independent roots syntheticall
     assert.deepEqual(
         repositoryFiltered.nodes.map((node) => node.id).sort(),
         [overviewRootId, "project-b-root"].sort()
+    );
+    assert.equal(
+        repositoryFiltered.diagnostics.visibility.repositoryFilter.enforcement,
+        "display"
+    );
+    assert.deepEqual(
+        repositoryFiltered.diagnostics.coverage.relationships,
+        {
+            selectedSessions: 1,
+            sessionsWithRecordedParent: 0,
+            recordedEdges: 0,
+            syntheticDisplayEdges: 1,
+        }
     );
     assert.equal(
         all.nodes.find((node) => node.id === "standalone-cli").isHomeChat,
@@ -1754,6 +1926,15 @@ test("card corner marker slots are shared, distinct, and future-ready", () => {
     assert.equal(slots.activity.x > 0 && slots.activity.y > 0, true);
     assert.equal(slots.trust.x < 0 && slots.trust.y > 0, true);
     assert.notDeepEqual(slots.activity, slots.trust);
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+        scopeUrl: "http://127.0.0.1/scope",
+    });
+    assert.match(html, /class: "node-trust-marker"/);
+    assert.match(html, /x: markerLayout\.trust\.x - 6/);
+    assert.match(html, /y: markerLayout\.trust\.y - 7/);
 });
 
 test("automatic announcements ignore timestamps and report operational changes", () => {
@@ -1762,6 +1943,14 @@ test("automatic announcements ignore timestamps and report operational changes",
     timestampOnly.generatedAt = "2026-09-25T23:00:00.000Z";
     timestampOnly.nodes[0].updatedAt = "2026-09-25T23:00:00.000Z";
     assert.equal(describeMeaningfulConstellationChange(previous, timestampOnly), "");
+    const refreshOnly = structuredClone(previous);
+    refreshOnly.diagnostics.refresh = {
+        ...refreshOnly.diagnostics.refresh,
+        status: "degraded",
+        usingLastGood: true,
+        consecutiveFailures: 1,
+    };
+    assert.equal(describeMeaningfulConstellationChange(previous, refreshOnly), "");
 
     const changed = structuredClone(previous);
     changed.nodes.find((node) => node.id === "busy-child").status = "completed";
@@ -2051,8 +2240,34 @@ test("collector uses app relationships and gracefully combines safe fallbacks", 
         assert.equal(child.humanGate.label, "Plan approval required");
         assert.equal(child.pullRequest, "#42");
         assert.equal(child.issue, "#7");
+        assert.equal(result.diagnostics.sources.appDatabase.status, "healthy");
+        assert.equal(result.diagnostics.sources.sessionStore.status, "healthy");
+        assert.equal(result.diagnostics.sources.eventMetadata.status, "partial");
+        assert.deepEqual(result.diagnostics.coverage.events, {
+            observedSessions: 1,
+            selectedSessions: 2,
+        });
+        assert.equal(result.diagnostics.level, "limited");
+        assert.deepEqual(root.provenance.repository, {
+            kind: "recorded",
+            source: "appDatabase",
+        });
+        assert.deepEqual(root.provenance.model, {
+            kind: "recorded",
+            source: "appDatabase",
+        });
+        assert.deepEqual(root.provenance.status, {
+            kind: "inferred",
+            sources: ["appDatabase", "eventMetadata"],
+        });
+        assert.deepEqual(child.provenance.status, {
+            kind: "inferred",
+            sources: ["appDatabase"],
+        });
         assert.equal(JSON.stringify(result).includes("Safe title"), false);
         assert.equal(JSON.stringify(result).includes("Private child prompt"), false);
+        assert.equal(JSON.stringify(result).includes(appPath), false);
+        assert.equal(JSON.stringify(result).includes(storePath), false);
     } finally {
         app?.close();
         store?.close();
@@ -2175,6 +2390,96 @@ test("collector all scope labels home chat only from positive session metadata",
         } catch {}
         rmSync(scratch, { recursive: true, force: true });
     }
+});
+
+test("refresh failure retains last-good state, publishes once, and recovers", async () => {
+    const initial = withRefreshHealth(fixtureState(), {
+        status: "healthy",
+        lastSuccessfulAt: "2026-09-25T18:00:00.000Z",
+    });
+    let fail = true;
+    const publications = [];
+    const entry = {
+        dataProvider: async () => {
+            if (fail) {
+                throw new Error(
+                    "private payload at D:\\Users\\person\\.copilot\\data.db"
+                );
+            }
+            return fixtureState();
+        },
+        scope: "tree",
+        projectScope: {
+            requested: "",
+            id: undefined,
+            name: undefined,
+            status: "none",
+        },
+        state: initial,
+        lastGoodState: initial,
+        refreshFailures: 0,
+        fingerprint: stateFingerprint(initial),
+        clients: new Set([
+            {
+                write(payload) {
+                    publications.push(payload);
+                },
+            },
+        ]),
+        refreshPromise: undefined,
+    };
+
+    await assert.rejects(refreshConstellationServer(entry), /private payload/);
+    assert.equal(entry.state.diagnostics.refresh.status, "degraded");
+    assert.equal(entry.state.diagnostics.refresh.usingLastGood, true);
+    assert.equal(entry.state.diagnostics.refresh.consecutiveFailures, 1);
+    assert.equal(
+        entry.state.diagnostics.refresh.lastSuccessfulAt,
+        "2026-09-25T18:00:00.000Z"
+    );
+    assert.deepEqual(
+        entry.state.nodes.map((node) => node.id),
+        initial.nodes.map((node) => node.id)
+    );
+    assert.equal(publications.length, 1);
+    assert.equal(JSON.stringify(entry.state).includes("private payload"), false);
+    assert.equal(JSON.stringify(entry.state).includes("data.db"), false);
+
+    await assert.rejects(refreshConstellationServer(entry), /private payload/);
+    assert.equal(entry.state.diagnostics.refresh.consecutiveFailures, 2);
+    assert.equal(publications.length, 1);
+
+    fail = false;
+    const recovered = await refreshConstellationServer(entry);
+    assert.equal(recovered.diagnostics.refresh.status, "healthy");
+    assert.equal(recovered.diagnostics.refresh.usingLastGood, false);
+    assert.equal(recovered.diagnostics.refresh.consecutiveFailures, 0);
+    assert.equal(publications.length, 2);
+});
+
+test("refresh health and diagnostic levels remain pure and sanitized", () => {
+    const initial = fixtureState();
+    const degraded = withRefreshHealth(initial, {
+        status: "degraded",
+        consecutiveFailures: 3,
+    });
+    assert.notEqual(degraded, initial);
+    assert.equal(diagnosticsLevel(degraded.diagnostics), "degraded");
+    assert.equal(initial.diagnostics.refresh.status, "healthy");
+    assert.deepEqual(
+        summarizeRelationshipCoverage(degraded.nodes, degraded.edges),
+        degraded.diagnostics.coverage.relationships
+    );
+});
+
+test("extension actions expose sanitized refresh failures", () => {
+    const source = readFileSync(path.join(extensionDir, "extension.mjs"), "utf8");
+    assert.match(source, /async function refreshForAction/);
+    assert.match(source, /"refresh_unavailable"/);
+    assert.match(source, /could not refresh sanitized local metadata/);
+    assert.match(source, /catch \{/);
+    assert.doesNotMatch(source, /error\.message/);
+    assert.doesNotMatch(source, /error\.stack/);
 });
 
 test("loopback server rejects unsafe requests and cleans up idempotently", async () => {
@@ -2340,6 +2645,14 @@ test("simultaneous canvas instances keep scope and filters isolated across refre
         assert.equal(project.scope, "all");
         assert.equal(project.projectScope.id, "project-a");
         assert.equal(project.projectScope.status, "resolved");
+        assert.equal(
+            project.state.diagnostics.projectFilter.enforcement,
+            "server"
+        );
+        assert.equal(
+            project.state.diagnostics.visibility.projectFilter.enforcement,
+            "server"
+        );
         assert.equal(project.state.currentSessionId, undefined);
         assert.deepEqual(
             project.state.nodes
@@ -2501,8 +2814,28 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     assert.match(html, /current session/);
     assert.match(html, /id="inspectorClose"/);
     assert.match(html, /aria-label="Close session details"/);
+    assert.match(html, /id="trustToggle"/);
+    assert.match(html, /aria-controls="diagnostics"/);
+    assert.match(html, /aria-label="Trust and diagnostics"/);
+    assert.match(html, /aria-label="Close trust and diagnostics"/);
+    assert.match(html, /function renderDiagnostics/);
+    assert.match(html, /function presentationFingerprint/);
+    assert.match(
+        html,
+        /if \(!presentationChanged\) \{\s*renderDiagnostics\(\);\s*return;/
+    );
+    assert.match(html, /Query incompatible/);
+    assert.match(html, /last known sanitized state remains visible/i);
+    assert.match(
+        html,
+        /consecutiveFailures: Math\.max\(\s*1,\s*Number\(refresh\.consecutiveFailures \|\| 0\)\s*\)/
+    );
+    assert.match(html, /Synthetic edges do not assert provenance/);
+    assert.match(html, /Repository is an additive display filter/);
+    assert.match(html, /Sensitive content is not returned/);
     assert.match(html, /aria-hidden="true"/);
     assert.match(html, /function closeInspector/);
+    assert.match(html, /function closeDiagnostics/);
     assert.match(html, /function appendModelDetail/);
     assert.match(
         html,
@@ -2684,8 +3017,20 @@ test("renderer keeps chrome, filters, status context, and inspector usable when 
     assert.match(html, /@media \(max-width: 360px\)/);
     assert.match(html, /grid-template-columns: minmax\(0, 1fr\) auto/);
     assert.match(html, /\.status-strip[\s\S]*overflow-x: auto/);
-    assert.match(html, /\.inspector \{ max-height: min\(48vh, 320px\); \}/);
-    assert.match(html, /\.inspector-head[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto/);
+    assert.match(
+        html,
+        /\.inspector, \.diagnostics \{ max-height: min\(48vh, 320px\); \}/
+    );
+    assert.match(
+        html,
+        /\.inspector-head, \.diagnostics-head[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto/
+    );
+    assert.match(html, /\.diagnostic-grid \{ grid-template-columns: 1fr/);
+    assert.match(html, /\.source-description \{ grid-column: 1 \/ -1; \}/);
+    assert.match(
+        html,
+        /\.trust-control:not\(\.limited\):not\(\.degraded\):not\(\.demo\) #trustLabel/
+    );
     assert.match(html, /width: Math\.max\(280, rect\.width\)/);
 });
 

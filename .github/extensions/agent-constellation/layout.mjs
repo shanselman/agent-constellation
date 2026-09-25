@@ -410,6 +410,68 @@ function filteredProjects(nodes) {
     ].sort((left, right) => String(left.name).localeCompare(String(right.name)));
 }
 
+function relationshipCoverage(nodes, edges) {
+    const realNodes = nodes.filter((node) => !node.synthetic);
+    return {
+        selectedSessions: realNodes.length,
+        sessionsWithRecordedParent: realNodes.filter((node) => node.parentId)
+            .length,
+        recordedEdges: edges.filter((edge) => !edge.synthetic).length,
+        syntheticDisplayEdges: edges.filter((edge) => edge.synthetic).length,
+    };
+}
+
+function filteredDiagnostics(
+    diagnostics,
+    {
+        realNodes,
+        edges,
+        projectFilter,
+        repository,
+        status,
+        independentRealRootCount,
+    }
+) {
+    return {
+        ...diagnostics,
+        selectedRealSessionCount: realNodes.length,
+        independentRealRootCount,
+        projectFilter,
+        coverage: {
+            ...diagnostics?.coverage,
+            events: {
+                observedSessions: realNodes.filter((node) =>
+                    node.provenance?.status?.sources?.includes("eventMetadata")
+                ).length,
+                selectedSessions: realNodes.length,
+            },
+            relationships: relationshipCoverage(realNodes, edges),
+        },
+        visibility: {
+            ...diagnostics?.visibility,
+            statusFilter: {
+                active: Boolean(status),
+                value: status || undefined,
+                enforcement: "display",
+            },
+            repositoryFilter: {
+                active: Boolean(repository),
+                value: repository || undefined,
+                enforcement: "display",
+            },
+            projectFilter: {
+                active: Boolean(projectFilter?.requested),
+                value:
+                    projectFilter?.effectiveProjectName ||
+                    projectFilter?.requested ||
+                    undefined,
+                enforcement: "display",
+                resolution: projectFilter?.status,
+            },
+        },
+    };
+}
+
 export function filterConstellationView(
     state,
     { status = "", repository = "", project = "" } = {}
@@ -434,24 +496,29 @@ export function filterConstellationView(
               status: projectResolution.status,
               effectiveProjectId: projectResolution.id,
               effectiveProjectName: projectResolution.name,
+              enforcement: "display",
           }
         : undefined;
     if (!realMatches.length) {
+        const edges = [];
+        const realNodes = [];
         return {
             ...state,
             rootId: undefined,
             currentSessionId: undefined,
-            nodes: [],
-            edges: [],
+            nodes: realNodes,
+            edges,
             counts: filteredCounts([], Object.keys(state.counts ?? {})),
             repositories: [],
             projects: [],
-            diagnostics: {
-                ...state.diagnostics,
-                selectedRealSessionCount: 0,
-                independentRealRootCount: 0,
+            diagnostics: filteredDiagnostics(state.diagnostics, {
+                realNodes,
+                edges,
                 projectFilter,
-            },
+                repository: normalizedRepository,
+                status: normalizedStatus,
+                independentRealRootCount: 0,
+            }),
         };
     }
 
@@ -579,12 +646,14 @@ export function filterConstellationView(
         counts: filteredCounts(realNodes, Object.keys(state.counts ?? {})),
         repositories: [...new Set(realNodes.map((node) => node.repository))].sort(),
         projects: filteredProjects(realNodes),
-        diagnostics: {
-            ...state.diagnostics,
-            selectedRealSessionCount: realNodes.length,
-            independentRealRootCount,
+        diagnostics: filteredDiagnostics(state.diagnostics, {
+            realNodes,
+            edges,
             projectFilter,
-        },
+            repository: normalizedRepository,
+            status: normalizedStatus,
+            independentRealRootCount,
+        }),
     };
 }
 

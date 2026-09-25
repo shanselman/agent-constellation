@@ -2,6 +2,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import {
+    diagnosticsLevel,
     filterConstellationState,
     sanitizeText,
     stateFingerprint,
@@ -125,24 +126,96 @@ function applyProjectScope(state, projectScope) {
     }
     projectScope.status = resolution.status;
     projectScope.name = resolution.name;
-    return filterConstellationState(state, {
+    const filtered = filterConstellationState(state, {
         project: projectScope.id || projectScope.requested,
     });
+    return {
+        ...filtered,
+        diagnostics: {
+            ...filtered.diagnostics,
+            projectFilter: {
+                ...filtered.diagnostics?.projectFilter,
+                enforcement: "server",
+            },
+            visibility: {
+                ...filtered.diagnostics?.visibility,
+                projectFilter: {
+                    ...filtered.diagnostics?.visibility?.projectFilter,
+                    enforcement: "server",
+                },
+            },
+        },
+    };
+}
+
+export function withRefreshHealth(
+    state,
+    {
+        status = "healthy",
+        consecutiveFailures = 0,
+        lastSuccessfulAt,
+    } = {}
+) {
+    const healthy = status !== "degraded";
+    const diagnostics = {
+        ...state?.diagnostics,
+        refresh: {
+            status: healthy ? "healthy" : "degraded",
+            usingLastGood: !healthy,
+            consecutiveFailures: healthy
+                ? 0
+                : Math.max(1, Math.floor(consecutiveFailures) || 1),
+            lastSuccessfulAt:
+                lastSuccessfulAt ||
+                state?.diagnostics?.refresh?.lastSuccessfulAt ||
+                state?.generatedAt,
+        },
+    };
+    return {
+        ...state,
+        diagnostics: {
+            ...diagnostics,
+            level: diagnosticsLevel(diagnostics),
+        },
+    };
 }
 
 export async function refreshConstellationServer(entryOrPromise, { publish = true } = {}) {
     const entry = await entryOrPromise;
     if (!entry) throw new Error("Canvas server is not open");
     if (entry.refreshPromise) return entry.refreshPromise;
-    entry.refreshPromise = Promise.resolve(entry.dataProvider({ scope: entry.scope }))
+    entry.refreshPromise = Promise.resolve()
+        .then(() => entry.dataProvider({ scope: entry.scope }))
         .then((next) => applyProjectScope(next, entry.projectScope))
         .then((next) => {
-            const fingerprint = stateFingerprint(next);
+            const healthyState = withRefreshHealth(next, {
+                status: "healthy",
+                lastSuccessfulAt: next.generatedAt,
+            });
+            const fingerprint = stateFingerprint(healthyState);
             const changed = fingerprint !== entry.fingerprint;
-            entry.state = next;
+            entry.state = healthyState;
+            entry.lastGoodState = healthyState;
+            entry.refreshFailures = 0;
             entry.fingerprint = fingerprint;
             if (publish && changed) publishState(entry);
             return entry.state;
+        })
+        .catch((error) => {
+            entry.refreshFailures = Math.max(0, entry.refreshFailures ?? 0) + 1;
+            const lastGood = entry.lastGoodState ?? entry.state;
+            const degradedState = withRefreshHealth(lastGood, {
+                status: "degraded",
+                consecutiveFailures: entry.refreshFailures,
+                lastSuccessfulAt:
+                    lastGood?.diagnostics?.refresh?.lastSuccessfulAt,
+            });
+            const fingerprint = stateFingerprint(degradedState);
+            const changed = fingerprint !== entry.fingerprint;
+            entry.state = degradedState;
+            entry.fingerprint = fingerprint;
+            if (publish && changed) publishState(entry);
+            throw error;
         })
         .finally(() => {
             entry.refreshPromise = undefined;
@@ -157,8 +230,14 @@ export async function setConstellationScope(entryOrPromise, scope) {
         throw new RequestError(400, "Scope must be tree or all");
     }
     if (entry.refreshPromise) await entry.refreshPromise;
+    const previousScope = entry.scope;
     entry.scope = scope;
-    return refreshConstellationServer(entry);
+    try {
+        return await refreshConstellationServer(entry);
+    } catch (error) {
+        entry.scope = previousScope;
+        throw error;
+    }
 }
 
 export async function startConstellationServer({
@@ -178,9 +257,11 @@ export async function startConstellationServer({
         name: undefined,
         status: "none",
     };
-    const initialState = applyProjectScope(
-        await dataProvider({ scope }),
-        projectScope
+    const initialState = withRefreshHealth(
+        applyProjectScope(await dataProvider({ scope }), projectScope),
+        {
+            status: "healthy",
+        }
     );
     const entry = {
         server: undefined,
@@ -196,6 +277,8 @@ export async function startConstellationServer({
         scope,
         projectScope,
         state: initialState,
+        lastGoodState: initialState,
+        refreshFailures: 0,
         fingerprint: stateFingerprint(initialState),
     };
 

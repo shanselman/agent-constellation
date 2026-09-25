@@ -92,6 +92,21 @@ Model names such as `llama`, `phi`, `mistral`, or `qwen` are **not** assumed to 
 
 For demonstrations, the canvas accepts an isolated `demoLocalModel: true` open input. It decorates only the current session in the returned canvas state and does not alter stored Copilot session data or affect other open Agent Constellation instances.
 
+### Trust and provenance diagnostics
+
+The toolbar includes a calm trust affordance. It stays visually quiet as **Sources ready** when expected capabilities are healthy, becomes **Limited** when metadata is partial or unavailable, and reports **Refresh delayed** while retaining the last successful sanitized state. Open it for one unified diagnostics panel that explains:
+
+- Local source capability as **Healthy**, **Partial**, **Unavailable**, or **Query incompatible**
+- Field-level **Recorded**, **Inferred**, **Unavailable**, and explicit **Demo decoration** provenance
+- Recorded parent-child coverage versus synthetic display-only containment
+- Selected/total real-session counts, bounded event coverage, current scope, search/grouping visibility, and filter behavior
+- Refresh health, consecutive failed attempts, and the last successful refresh
+- Sanitized limitations without database paths, raw errors, payloads, prompts, messages, secrets, tool arguments, or file contents
+
+An opened SQLite database is not considered healthy merely because the file opened: required tables and columns must be query-compatible. Repeated failed background polls preserve the same last-good nodes and publish only the health transition, avoiding state churn. Recovery replaces the state normally and clears degraded health.
+
+Repository-only filtering remains an additive display filter in the open input, in-canvas selector, and `get_state` action. It does not claim server-side enforcement. Project scope can be server-enforced when supplied at open time; diagnostics label the difference explicitly.
+
 ### Real-time updates
 
 Each open canvas gets its own dependency-free HTTP server bound to an ephemeral `127.0.0.1` port. Server-Sent Events push state changes to the canvas, with lightweight polling as a fallback. Manual refresh and the agent-callable `refresh` action are also available.
@@ -104,7 +119,7 @@ Agent Constellation is deliberately local-first:
 
 - Reads Copilot's local SQLite databases in **read-only** mode.
 - Reads only a bounded tail of local session event metadata.
-- Returns sanitized identifiers and operational metadata—not prompts, chat messages, secrets, tool arguments, or repository file contents.
+- Returns sanitized identifiers and operational metadata—not prompts, chat messages, secrets, raw errors, internal payloads, tool arguments, database paths, or repository file contents.
 - Uses project names, repository labels, and session-type metadata without returning raw machine paths or session titles.
 - Binds its renderer server to `127.0.0.1` only.
 - Requires an unguessable per-canvas bootstrap token, then stores it in an `HttpOnly`, `SameSite=Strict` cookie.
@@ -112,7 +127,7 @@ Agent Constellation is deliberately local-first:
 - Uses a restrictive Content Security Policy and loads no CDN assets.
 - Has zero runtime npm dependencies and makes no external network requests.
 
-The inspector reports when a local data source is unavailable and the resulting status or relationship information is partial.
+The trust panel reports unavailable, partial, and query-incompatible local sources, while the selected-session inspector identifies recorded versus inferred field provenance.
 
 ## Install
 
@@ -222,11 +237,11 @@ The installable extension lives entirely in [`.github/extensions/agent-constella
 | File | Responsibility |
 |---|---|
 | `extension.mjs` | Declares the canvas, open schema, actions, and lifecycle with the Copilot SDK. |
-| `data.mjs` | Reads local sources, derives statuses and relationships, sanitizes project/session metadata, normalizes tree/all scopes, filters state, and isolates demo decoration. |
+| `data.mjs` | Reads local sources, validates query capability, derives statuses and relationships, sanitizes project/session metadata, normalizes the unified diagnostics/provenance schema, filters state, and isolates demo decoration. |
 | `layout.mjs` | Produces deterministic search/focus visibility, explicit-target ancestry protection, direct-sibling repository groups, hard-budget overflow pages, bounded-stack/horizontal layouts, density-aware orientation, attention-first ordering, completed/archived shelves, shared card-marker slots, meaningful-change summaries, explicit synthetic containment, model labels, fit scaling, and pinch transforms. |
-| `renderer.mjs` | Generates the accessible, right-pane-first, theme-aware canvas UI with persistent repository/overflow expansion, hidden-target reveal, roving keyboard focus, search/focus reset controls, and per-view scope/project/repository controls. |
-| `server.mjs` | Hosts the token-protected loopback page, JSON state, per-instance scope endpoint, refresh endpoint, and SSE stream. |
-| `agent-constellation.test.mjs` | Covers multi-project collection, sanitization, identity labels, real/synthetic relationships, scope isolation, responsive layout, gestures, local-model semantics, renderer accessibility, and loopback protections. |
+| `renderer.mjs` | Generates the accessible, right-pane-first, theme-aware canvas UI with a shared-marker trust affordance, unified diagnostics panel, persistent repository/overflow expansion, hidden-target reveal, roving keyboard focus, search/focus reset controls, and per-view scope/project/repository controls. |
+| `server.mjs` | Hosts the token-protected loopback page, JSON state, per-instance scope endpoint, refresh endpoint, SSE stream, and last-good refresh retention. |
+| `agent-constellation.test.mjs` | Covers multi-project collection, source capability, provenance, sanitization, refresh fail/recover behavior, no-publish churn, real/synthetic relationships, scope isolation, responsive layout, hard-budget compaction, marker slots, local-model semantics, renderer accessibility, and loopback protections. |
 | `copilot-extension.json` | Identifies the folder as a shareable/installable Copilot extension. |
 
 ### Local data sources
@@ -237,7 +252,7 @@ When present under `COPILOT_HOME` (normally `~/.copilot`), the extension combine
 - `session-store.db` for repository, branch, and reference fallbacks
 - `session-state/<session-id>/events.jsonl` for bounded operational timing and human-gate inference
 
-The extension tolerates missing tables, columns, databases, and event files. It degrades to the metadata that is available and reports limitations in the canvas.
+The extension tolerates missing databases and event files. Missing optional tables degrade capability to partial; missing or incompatible required tables/columns are reported as query incompatible rather than ready. It uses the compatible metadata that remains and reports sanitized limitations in the canvas.
 
 ## Limitations
 
@@ -247,6 +262,8 @@ The extension tolerates missing tables, columns, databases, and event files. It 
 - Project and relationship metadata can be partial for older or evolving app schemas. Diagnostics identify those limitations rather than guessing.
 - Copilot's local app data schema can evolve. The collector uses guarded reads and fallbacks, but a future schema change may temporarily reduce available metadata.
 - Statuses are inferred from local app state and recent event metadata; unavailable sources reduce precision.
+- Repository filters are additive display filtering, not an authorization boundary or server-enforced repository scope.
+- Refresh health is per open canvas instance and reports only the current last-good lifecycle, not durable uptime history.
 - Search is normalized token-substring matching rather than fuzzy or full-text search.
 - Repository grouping is deliberately local to direct siblings and existing repository labels; it does not infer relationships or globally optimize whitespace.
 - Overflow pages are deterministic bounded summaries, not inferred parents; expanding them can intentionally exceed the default card/height budget.
