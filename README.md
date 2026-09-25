@@ -39,6 +39,12 @@ Statuses include:
 
 Completed descendants collapse into a **Completed shelf** so a large constellation remains readable. Expand the shelf when you need to inspect finished work.
 
+### Needs-attention radar
+
+A compact **Needs attention** strip prioritizes sessions that are waiting for the user, waiting for plan approval, blocked, failed, suspiciously stale while busy, or newly completed. Labels always accompany status color, and selecting an item focuses the existing tree card and opens its inspector without adding any destructive actions.
+
+The local heuristic is deliberately conservative and deterministic: a busy session becomes suspicious after 45 minutes without recorded activity, and a completion remains recent for 10 minutes. Exact threshold boundaries are included. The strip stays visible with a quiet empty state when no session needs attention.
+
 ### Responsive side-pane layout
 
 Wide canvases use a horizontal family-tree layout. Narrow or tall side panes automatically switch to a compact vertical mission-control layout with readable cards, horizontal ancestry, and scrollable depth. The toolbar also condenses for narrow panes.
@@ -129,6 +135,7 @@ For an explicit local-model UI demonstration:
 - **Width** fits the tree to a readable minimum card scale.
 - **+ / -** zooms.
 - **Filter** narrows by status or repository.
+- **Needs attention** items clear active filters as needed, focus the matching card, and open its inspector.
 - **Click or press Enter/Space** on a session to open its inspector.
 - **Arrow keys** move focus directionally between session cards.
 - **Click the Completed shelf** to expand or collapse completed descendants.
@@ -154,6 +161,7 @@ The installable extension lives entirely in [`.github/extensions/agent-constella
 |---|---|
 | `extension.mjs` | Declares the canvas, open schema, actions, and lifecycle with the Copilot SDK. |
 | `data.mjs` | Reads local sources, derives statuses and relationships, sanitizes metadata, filters state, and isolates demo decoration. |
+| `attention.mjs` | Applies deterministic attention priorities and conservative stale-busy/recent-completion thresholds. |
 | `layout.mjs` | Produces deterministic horizontal/vertical layouts, completed-shelf behavior, model labels, fit scaling, and pinch transforms. |
 | `renderer.mjs` | Generates the accessible, responsive, theme-aware canvas UI. |
 | `server.mjs` | Hosts the token-protected loopback page, JSON state, refresh endpoint, and SSE stream. |
