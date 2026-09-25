@@ -12,33 +12,44 @@ export function renderConstellationHtml(config) {
       --canvas-bg: var(--background-color-default, #0d1117);
       --panel-bg: color-mix(in srgb, var(--background-color-default, #0d1117) 94%, var(--text-color-default, #f0f6fc) 6%);
       --card-bg: color-mix(in srgb, var(--background-color-default, #0d1117) 86%, var(--text-color-default, #f0f6fc) 14%);
+      --card-shadow: rgb(1 4 9 / .22);
       --text: var(--text-color-default, #f0f6fc);
       --muted: var(--text-color-muted, #8b949e);
       --border: var(--border-color-default, #30363d);
       --focus: var(--color-focus-outline, #58a6ff);
       --busy: var(--true-color-blue, #2f81f7);
+      --busy-muted: var(--true-color-blue-muted, color-mix(in srgb, var(--busy) 18%, transparent));
       --idle: var(--text-color-muted, #8b949e);
-      --complete: #3fb950;
+      --complete: var(--true-color-green, #3fb950);
       --local-model: color-mix(in srgb, var(--complete) 86%, var(--text) 14%);
-      --waiting: #d29922;
-      --plan: #a371f7;
-      --blocked: #db6d28;
+      --demo: var(--true-color-purple, #a371f7);
+      --waiting: var(--true-color-yellow, #d29922);
+      --plan: var(--true-color-purple, #a371f7);
+      --blocked: var(--true-color-orange, #db6d28);
       --failed: var(--true-color-red, #f85149);
-      --archived: #6e7681;
+      --archived: var(--text-color-muted, #6e7681);
       font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
       font-size: var(--text-body-medium, 14px);
       line-height: var(--leading-body-medium, 20px);
     }
+    :where(html, body)[data-color-mode="light"] {
+      --panel-bg: color-mix(in srgb, var(--background-color-default, #fff) 95%, var(--text-color-default, #1f2328) 5%);
+      --card-bg: color-mix(in srgb, var(--background-color-default, #fff) 98%, var(--text-color-default, #1f2328) 2%);
+      --card-shadow: rgb(31 35 40 / .12);
+    }
+    :where(html, body)[data-color-mode="dark"] {
+      --card-shadow: rgb(1 4 9 / .28);
+    }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      min-width: 320px;
+      min-width: 280px;
       height: 100vh;
       overflow: hidden;
       background: var(--canvas-bg);
       color: var(--text);
     }
-    button, select {
+    button, select, input {
       color: inherit;
       background: var(--card-bg);
       border: 1px solid var(--border);
@@ -47,14 +58,14 @@ export function renderConstellationHtml(config) {
     }
     button { cursor: pointer; min-height: 30px; padding: 4px 8px; }
     button:hover { border-color: var(--muted); }
-    button:focus-visible, select:focus-visible, .node:focus-visible {
+    button:focus-visible, select:focus-visible, input:focus-visible {
       outline: 2px solid var(--focus);
       outline-offset: 2px;
     }
     .app {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: auto auto minmax(0, 1fr);
+      grid-template-rows: auto auto auto minmax(0, 1fr);
       height: 100vh;
     }
     .chrome {
@@ -102,7 +113,8 @@ export function renderConstellationHtml(config) {
       align-items: center;
       gap: 4px;
       min-width: 0;
-      overflow: hidden;
+      overflow-x: auto;
+      scrollbar-width: thin;
     }
     .status-strip button {
       display: inline-flex;
@@ -115,10 +127,75 @@ export function renderConstellationHtml(config) {
       white-space: nowrap;
     }
     .status-strip button.active { border-color: var(--status-color); color: var(--text); }
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--status-color); flex: none; }
+    .status-glyph {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      flex: none;
+      background: var(--status-color);
+      border: 1px solid var(--status-color);
+    }
+    .status-busy .status-glyph { border-radius: 50%; }
+    .status-idle .status-glyph {
+      border-width: 2px;
+      border-radius: 50%;
+      background: transparent;
+    }
+    .status-completed .status-glyph {
+      width: 9px;
+      height: 6px;
+      border-width: 0 0 2px 2px;
+      background: transparent;
+      transform: rotate(-45deg) translateY(-1px);
+    }
+    .status-waiting-user .status-glyph {
+      border-radius: 2px;
+      transform: rotate(45deg) scale(.82);
+    }
+    .status-waiting-plan .status-glyph {
+      border-radius: 50% 50% 50% 1px;
+      transform: rotate(-45deg);
+    }
+    .status-blocked .status-glyph {
+      clip-path: polygon(25% 0, 75% 0, 100% 25%, 100% 75%, 75% 100%, 25% 100%, 0 75%, 0 25%);
+    }
+    .status-failed .status-glyph {
+      clip-path: polygon(18% 0, 50% 32%, 82% 0, 100% 18%, 68% 50%, 100% 82%, 82% 100%, 50% 68%, 18% 100%, 0 82%, 32% 50%, 0 18%);
+    }
+    .status-archived .status-glyph {
+      background: repeating-linear-gradient(135deg, var(--status-color) 0 2px, transparent 2px 4px);
+      border-radius: 1px;
+    }
     .toolbar { display: flex; align-items: center; gap: 4px; margin-left: auto; }
     .toolbar button { min-width: 30px; }
     .toolbar .text-control { min-width: auto; }
+    .trust-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-width: auto !important;
+      color: var(--muted);
+      border-color: transparent;
+    }
+    .trust-control.limited {
+      color: var(--waiting);
+      border-color: color-mix(in srgb, var(--waiting) 55%, var(--border));
+    }
+    .trust-control.degraded {
+      color: var(--blocked);
+      border-color: color-mix(in srgb, var(--blocked) 55%, var(--border));
+    }
+    .trust-control.demo {
+      color: var(--demo);
+      border-color: color-mix(in srgb, var(--demo) 60%, var(--border));
+    }
+    .trust-indicator {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      flex: none;
+    }
     .filters {
       grid-row: 2;
       display: none;
@@ -137,9 +214,126 @@ export function renderConstellationHtml(config) {
       color: var(--muted);
       font-size: 12px;
     }
+    .filters .search-label { flex: 1 1 260px; }
+    input[type="search"] {
+      min-width: 120px;
+      width: 100%;
+      padding: 4px 7px;
+    }
+    .filter-summary {
+      margin-left: auto;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
     select { min-width: 0; max-width: 240px; padding: 4px 24px 4px 7px; }
-    .workspace {
+    .attention-radar {
       grid-row: 3;
+      min-width: 0;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel-bg);
+    }
+    .attention-heading {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 34px;
+      padding: 4px 8px;
+      cursor: pointer;
+      list-style: none;
+    }
+    .attention-heading::-webkit-details-marker { display: none; }
+    .attention-heading:focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: -2px;
+    }
+    .attention-title {
+      font-size: 12px;
+      font-weight: var(--font-weight-semibold, 600);
+      white-space: nowrap;
+    }
+    .attention-count {
+      min-width: 20px;
+      padding: 0 6px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--text);
+      font-size: 10px;
+      line-height: 18px;
+      text-align: center;
+    }
+    .attention-summary {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 11px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .attention-caret {
+      margin-left: auto;
+      color: var(--muted);
+      transition: transform 160ms ease;
+    }
+    .attention-radar[open] .attention-caret { transform: rotate(90deg); }
+    .attention-panel {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+      padding: 0 8px 5px;
+    }
+    .attention-list {
+      display: flex;
+      flex: 1 1 auto;
+      gap: 5px;
+      min-width: 0;
+      margin: 0;
+      padding: 0 1px 2px;
+      overflow-x: auto;
+      list-style: none;
+      scrollbar-width: thin;
+    }
+    .attention-list:empty { display: none; }
+    .attention-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-height: 28px;
+      max-width: 250px;
+      padding: 2px 7px;
+      border-color: color-mix(in srgb, var(--status-color) 62%, var(--border));
+      white-space: nowrap;
+    }
+    .attention-item .status-glyph { flex: none; }
+    .attention-kind {
+      color: var(--status-color);
+      font-size: 10px;
+      font-weight: var(--font-weight-semibold, 600);
+    }
+    .attention-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .attention-age {
+      flex: none;
+      color: var(--muted);
+      font-size: 10px;
+    }
+    .attention-empty, .attention-overflow {
+      color: var(--muted);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .attention-overflow {
+      min-height: 24px;
+      padding: 1px 5px;
+      border-color: transparent;
+      background: transparent;
+    }
+    .workspace {
+      grid-row: 4;
       display: grid;
       grid-template-rows: minmax(0, 1fr) auto;
       min-width: 0;
@@ -154,7 +348,7 @@ export function renderConstellationHtml(config) {
       overscroll-behavior: contain;
       scrollbar-gutter: stable;
       background:
-        radial-gradient(circle at 16% 12%, color-mix(in srgb, var(--busy) 7%, transparent), transparent 34%),
+        radial-gradient(circle at 16% 12%, var(--busy-muted), transparent 34%),
         radial-gradient(circle at 82% 72%, color-mix(in srgb, var(--plan) 6%, transparent), transparent 38%),
         var(--canvas-bg);
     }
@@ -192,6 +386,16 @@ export function renderConstellationHtml(config) {
       stroke-dasharray: 2 7;
       opacity: .78;
     }
+    .edge.repository-group {
+      stroke: var(--busy);
+      stroke-dasharray: 4 5;
+      opacity: .82;
+    }
+    .edge.overflow-summary {
+      stroke: var(--plan);
+      stroke-dasharray: 2 5;
+      opacity: .82;
+    }
     @keyframes flow { to { stroke-dashoffset: -32; } }
     .node { cursor: pointer; }
     .node-card {
@@ -199,10 +403,20 @@ export function renderConstellationHtml(config) {
       stroke: var(--status-color);
       stroke-width: 2;
       vector-effect: non-scaling-stroke;
-      filter: drop-shadow(0 3px 8px rgb(0 0 0 / .18));
+      filter: drop-shadow(0 3px 8px var(--card-shadow));
     }
     .node:hover .node-card, .node.selected .node-card { stroke-width: 3; }
     .node.root .node-card { stroke-width: 3; }
+    .node-focus-ring {
+      fill: none;
+      stroke: var(--focus);
+      stroke-width: 3;
+      opacity: 0;
+      vector-effect: non-scaling-stroke;
+      pointer-events: none;
+    }
+    .node:focus-visible { outline: none; }
+    .node:focus-visible .node-focus-ring { opacity: 1; }
     .node.current .node-card {
       stroke-dasharray: 5 3;
       filter: drop-shadow(0 0 8px color-mix(in srgb, var(--focus) 45%, transparent));
@@ -214,18 +428,48 @@ export function renderConstellationHtml(config) {
       stroke: var(--plan);
       stroke-dasharray: 3 5;
     }
+    .node.repository-group .node-card {
+      fill: color-mix(in srgb, var(--card-bg) 78%, var(--busy) 22%);
+      stroke: var(--busy);
+      stroke-dasharray: 5 4;
+    }
+    .node.overflow-summary .node-card {
+      fill: color-mix(in srgb, var(--card-bg) 76%, var(--plan) 24%);
+      stroke: var(--plan);
+      stroke-dasharray: 3 4;
+    }
+    .node.focus-origin .node-card {
+      stroke-width: 4;
+      filter: drop-shadow(0 0 10px color-mix(in srgb, var(--focus) 58%, transparent));
+    }
     .node-halo { fill: none; stroke: var(--status-color); opacity: 0; transform-origin: center; }
     .node.busy .node-halo { opacity: .46; animation: pulse 1.8s ease-out infinite; }
     .node.waiting-user .node-card, .node.waiting-plan .node-card {
       stroke-width: 3;
       animation: attention 2.2s ease-in-out infinite;
     }
+    .node-status-marker .marker-fill { fill: var(--status-color); }
+    .node-status-marker .marker-outline {
+      fill: var(--card-bg);
+      stroke: var(--status-color);
+      stroke-width: 2;
+      vector-effect: non-scaling-stroke;
+    }
+    .node-status-marker .marker-line {
+      fill: none;
+      stroke: var(--color-white, #fff);
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      vector-effect: non-scaling-stroke;
+    }
+    .node-status-marker.status-idle .marker-line { stroke: var(--status-color); }
     @keyframes pulse {
       0% { r: 36px; opacity: .5; }
       75%, 100% { r: 56px; opacity: 0; }
     }
     @keyframes attention {
-      0%, 100% { filter: drop-shadow(0 3px 8px rgb(0 0 0 / .18)); }
+      0%, 100% { filter: drop-shadow(0 3px 8px var(--card-shadow)); }
       50% { filter: drop-shadow(0 0 10px color-mix(in srgb, var(--waiting) 55%, transparent)); }
     }
     .node-name { fill: var(--text); font-weight: var(--font-weight-semibold, 600); font-size: 12px; }
@@ -247,7 +491,14 @@ export function renderConstellationHtml(config) {
       font-weight: var(--font-weight-semibold, 600);
       letter-spacing: .4px;
     }
-    .inspector {
+    .node-trust-marker { fill: var(--demo); }
+    .node-trust-marker-text {
+      fill: var(--color-white, #fff);
+      font-size: 7px;
+      font-weight: var(--font-weight-semibold, 600);
+      letter-spacing: .3px;
+    }
+    .inspector, .diagnostics {
       display: none;
       max-height: min(42vh, 320px);
       overflow: auto;
@@ -255,8 +506,8 @@ export function renderConstellationHtml(config) {
       background: var(--panel-bg);
       padding: 8px 10px 10px;
     }
-    .inspector.open { display: block; }
-    .inspector-head {
+    .inspector.open, .diagnostics.open { display: block; }
+    .inspector-head, .diagnostics-head {
       display: flex;
       align-items: center;
       gap: 8px;
@@ -267,14 +518,14 @@ export function renderConstellationHtml(config) {
       background: var(--panel-bg);
       border-bottom: 1px solid var(--border);
     }
-    .inspector h2 {
+    .inspector h2, .diagnostics h2 {
       margin: 0;
       font-size: var(--text-title-small, 16px);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .inspector-close { margin-left: auto; }
+    .inspector-close, .diagnostics-close { margin-left: auto; }
     .detail-status {
       display: inline-flex;
       align-items: center;
@@ -293,7 +544,7 @@ export function renderConstellationHtml(config) {
     dt { color: var(--muted); font-size: 12px; }
     dd { margin: 0; overflow-wrap: anywhere; }
     .model-detail { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; }
-    .demo-local-model {
+    .local-model-label {
       color: var(--local-model);
       font-size: 11px;
       font-weight: var(--font-weight-semibold, 600);
@@ -301,6 +552,55 @@ export function renderConstellationHtml(config) {
     }
     code { font-family: var(--font-mono, Consolas, monospace); font-size: var(--text-code-inline, 12px); }
     .source-note { margin-top: 8px; color: var(--muted); font-size: 11px; }
+    .trust-summary { margin: 7px 0 9px; color: var(--muted); }
+    .demo-notice {
+      margin: 8px 0;
+      padding: 7px 9px;
+      border: 1px solid color-mix(in srgb, var(--demo) 60%, var(--border));
+      border-radius: 7px;
+      background: color-mix(in srgb, var(--demo) 10%, transparent);
+    }
+    .demo-notice strong { color: var(--demo); }
+    .diagnostic-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+      gap: 14px;
+    }
+    .diagnostics h3 {
+      margin: 7px 0 5px;
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: .35px;
+      text-transform: uppercase;
+    }
+    .source-list { display: grid; gap: 5px; }
+    .source-row {
+      display: grid;
+      grid-template-columns: minmax(100px, max-content) auto minmax(0, 1fr);
+      align-items: baseline;
+      gap: 7px;
+      padding: 4px 0;
+      border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+    }
+    .source-row:last-child { border-bottom: 0; }
+    .source-label { font-weight: var(--font-weight-semibold, 600); }
+    .source-description, .privacy-note { color: var(--muted); font-size: 11px; }
+    .availability {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 0 6px;
+      color: var(--muted);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+    .availability.partial { color: var(--waiting); border-color: var(--waiting); }
+    .availability.unavailable,
+    .availability.query-incompatible {
+      color: var(--blocked);
+      border-color: var(--blocked);
+    }
+    .diagnostic-facts { margin-top: 0; }
+    .privacy-note { margin: 8px 0 0; }
     .sr-only {
       position: absolute;
       width: 1px;
@@ -320,19 +620,82 @@ export function renderConstellationHtml(config) {
     .status-blocked { --status-color: var(--blocked); }
     .status-failed { --status-color: var(--failed); }
     .status-archived { --status-color: var(--archived); }
-    @media (max-width: 620px) {
-      .chrome { flex-wrap: wrap; row-gap: 3px; }
-      .brand { flex: 1 1 auto; }
-      .summary { max-width: 150px; }
+    @media (max-width: 720px) {
+      .chrome {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 4px 6px;
+        padding: 6px;
+      }
+      .brand { grid-column: 1; }
+      .scope-control { grid-column: 2; }
       .scope-control span { display: none; }
-      .status-strip { order: 3; flex: 1 0 100%; }
-      .status-strip button { font-size: 11px; }
+      .toolbar {
+        grid-column: 1 / -1;
+        grid-row: 2;
+        justify-content: flex-start;
+        margin-left: 0;
+      }
+      .toolbar button { min-width: 28px; padding-inline: 6px; }
+      .status-strip {
+        grid-column: 1 / -1;
+        grid-row: 3;
+        width: 100%;
+        padding-bottom: 2px;
+      }
+      .status-strip button { flex: none; min-height: 24px; font-size: 11px; }
       .toolbar .optional-label { display: none; }
       .filters.open { align-items: stretch; flex-direction: column; }
       .filters label { display: grid; grid-template-columns: 70px minmax(0, 1fr); }
-      select { max-width: none; width: 100%; }
+      .filters .search-label { flex-basis: auto; }
+      .filter-summary { margin-left: 0; }
+      select, input[type="search"] { max-width: none; width: 100%; }
+      .attention-panel {
+        align-items: stretch;
+        max-height: 176px;
+        overflow-y: auto;
+      }
+      .attention-list {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        overflow: visible;
+      }
+      .attention-item {
+        width: 100%;
+        max-width: none;
+      }
+      .attention-overflow { align-self: center; }
       dl { grid-template-columns: 1fr; gap: 1px; }
       dd { margin-bottom: 4px; }
+      .inspector, .diagnostics { max-height: min(48vh, 320px); }
+      .diagnostic-grid { grid-template-columns: 1fr; gap: 5px; }
+      .source-row { grid-template-columns: minmax(100px, max-content) auto; }
+      .source-description { grid-column: 1 / -1; }
+    }
+    @media (max-width: 520px) {
+      .brand h1 { font-size: 14px; }
+      .summary { display: none; }
+      .filters { padding: 6px; }
+      .attention-summary { font-size: 10px; }
+      .inspector, .diagnostics { padding-inline: 8px; }
+      .trust-control:not(.limited):not(.degraded):not(.demo) #trustLabel {
+        display: none;
+      }
+    }
+    @media (max-width: 360px) {
+      .toolbar {
+        overflow-x: auto;
+        scrollbar-width: thin;
+      }
+      .inspector-head, .diagnostics-head {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+      }
+      .detail-status { grid-column: 1; }
+      .inspector-close, .diagnostics-close {
+        grid-column: 2;
+        grid-row: 1 / span 2;
+      }
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
@@ -342,6 +705,46 @@ export function renderConstellationHtml(config) {
         transition-duration: .001ms !important;
       }
       .edge.working { stroke-dasharray: none; }
+      .node-halo { display: none; }
+      .attention-caret { transition: none; }
+    }
+    @media (forced-colors: active) {
+      body, .chrome, .filters, .attention-radar, .inspector, .inspector-head,
+      .diagnostics, .diagnostics-head, .stage {
+        background: Canvas;
+        color: CanvasText;
+      }
+      button, select { border-color: ButtonBorder; background: Canvas; color: CanvasText; }
+      button:focus-visible, select:focus-visible { outline-color: Highlight; }
+      .edge, .edge.working, .edge.attention, .edge.shelf, .edge.containment,
+      .edge.repository-group, .edge.overflow-summary {
+        stroke: CanvasText;
+      }
+      .node-card {
+        fill: Canvas;
+        stroke: CanvasText;
+        filter: none;
+      }
+      .node.selected .node-card { stroke: Highlight; }
+      .node-focus-ring { stroke: Highlight; }
+      .node-status-marker .marker-fill { fill: CanvasText; }
+      .node-status-marker .marker-outline { fill: Canvas; stroke: CanvasText; }
+      .node-status-marker .marker-line { stroke: Canvas; }
+      .node-status-marker.status-idle .marker-line { stroke: CanvasText; }
+      .node-name, .node-repo, .node-model, .node-status { fill: CanvasText; }
+      .current-marker { fill: Highlight; }
+      .current-marker-text { fill: HighlightText; }
+      .node-trust-marker { fill: Highlight; }
+      .node-trust-marker-text { fill: HighlightText; }
+      .status-glyph {
+        background: CanvasText;
+        border-color: CanvasText;
+        color: CanvasText;
+        forced-color-adjust: none;
+      }
+      .status-idle .status-glyph, .status-completed .status-glyph {
+        background: transparent;
+      }
     }
   </style>
 </head>
@@ -361,7 +764,13 @@ export function renderConstellationHtml(config) {
       </label>
       <div class="status-strip" id="legend" aria-label="Mission status counts"></div>
       <div class="toolbar" aria-label="Constellation controls">
+        <button id="trustToggle" class="trust-control" type="button" aria-expanded="false" aria-controls="diagnostics" title="Open trust and diagnostics">
+          <span class="trust-indicator" aria-hidden="true"></span>
+          <span id="trustLabel">Sources ready</span>
+        </button>
         <button id="refresh" type="button" title="Refresh live state">↻<span class="sr-only">Refresh</span></button>
+        <button id="searchFocus" class="text-control" type="button" title="Search sanitized session metadata">⌕<span class="optional-label"> Search</span></button>
+        <button id="showAll" class="text-control" type="button" hidden>Show all</button>
         <button id="home" class="text-control" type="button" title="Center the current session">◎<span class="optional-label"> Current</span><span class="sr-only">Center current session</span></button>
         <button id="fitWidth" class="text-control" type="button" title="Fit readable card width">↔<span class="optional-label"> Width</span><span class="sr-only">Fit width</span></button>
         <button id="zoomOut" type="button" aria-label="Zoom out">−</button>
@@ -370,6 +779,9 @@ export function renderConstellationHtml(config) {
       </div>
     </header>
     <section class="filters" id="filters" aria-label="Constellation filters">
+      <label class="search-label">Search
+        <input id="searchInput" type="search" placeholder="Name, project, repo, branch, reference, model, status" autocomplete="off" spellcheck="false" aria-describedby="searchHelp">
+      </label>
       <label>Status
         <select id="statusFilter">
           <option value="">All statuses</option>
@@ -389,41 +801,94 @@ export function renderConstellationHtml(config) {
       <label>Project
         <select id="projectFilter"><option value="">All projects</option></select>
       </label>
+      <span class="filter-summary" id="filterSummary"></span>
     </section>
+    <details class="attention-radar" id="attentionRadar" open>
+      <summary class="attention-heading" id="attentionHeading">
+        <span class="attention-title">Needs attention</span>
+        <span class="attention-count" id="attentionCount">0</span>
+        <span class="attention-summary" id="attentionSummary">Checking operational state…</span>
+        <span class="attention-caret" aria-hidden="true">›</span>
+      </summary>
+      <div class="attention-panel">
+        <ol class="attention-list" id="attentionList"></ol>
+        <button class="attention-overflow" id="attentionOverflow" type="button" hidden></button>
+        <span class="attention-empty" id="attentionEmpty">Nothing needs attention right now.</span>
+      </div>
+    </details>
     <main class="workspace">
       <section class="stage" id="stage" aria-label="Agent family tree">
-        <svg id="constellation" role="tree" aria-label="Copilot project session constellation">
+        <svg id="constellation" role="tree" aria-label="Copilot project session constellation" aria-describedby="keyboardHelp">
           <g id="viewport"><g id="edges"></g><g id="nodes"></g></g>
         </svg>
-        <div class="empty" id="empty">No live sessions match these filters.</div>
+        <div class="empty" id="empty" role="status">No live sessions match these filters.</div>
       </section>
       <section class="inspector" id="inspector" aria-label="Selected session details" aria-hidden="true">
         <div class="inspector-head">
           <h2 id="detailName">Session details</h2>
-          <div class="detail-status status-idle" id="detailStatus"><span class="dot"></span><span></span></div>
+          <div class="detail-status status-idle" id="detailStatus"><span class="status-glyph" aria-hidden="true"></span><span></span></div>
+          <button id="focusSelected" type="button">Focus lineage</button>
           <button class="inspector-close" id="inspectorClose" type="button" aria-label="Close session details">×</button>
         </div>
         <dl id="details"></dl>
         <div class="source-note" id="sourceNote">Sanitized metadata only.</div>
+      </section>
+      <section class="diagnostics" id="diagnostics" aria-label="Trust and diagnostics" aria-hidden="true">
+        <div class="diagnostics-head">
+          <h2>Trust and diagnostics</h2>
+          <button class="diagnostics-close" id="diagnosticsClose" type="button" aria-label="Close trust and diagnostics">×</button>
+        </div>
+        <p class="trust-summary" id="trustSummary"></p>
+        <div class="demo-notice" id="demoNotice" role="note" hidden>
+          <strong>Demo decoration is active.</strong>
+          Only the current session model presentation is simulated. Local-model support does not depend on this decoration.
+        </div>
+        <div class="diagnostic-grid">
+          <section aria-labelledby="sourcesHeading">
+            <h3 id="sourcesHeading">Sources and capability</h3>
+            <div class="source-list" id="sourceDiagnostics"></div>
+          </section>
+          <section aria-labelledby="interpretationHeading">
+            <h3 id="interpretationHeading">Scope and interpretation</h3>
+            <dl class="diagnostic-facts" id="provenanceDetails"></dl>
+          </section>
+        </div>
+        <p class="privacy-note" id="privacyNote"></p>
       </section>
     </main>
   </div>
   <div class="sr-only" id="scopeDescription">
     Tree shows the current session family. All sessions adds a synthetic overview container; dashed grouping connections do not represent parent-child lineage.
   </div>
+  <div class="sr-only" id="searchHelp">Searches sanitized session names, projects, repositories, branches, pull requests, issues, tasks, models, and statuses.</div>
+  <div class="sr-only" id="keyboardHelp">Use the Needs attention queue to reveal a session and open its details. In the tree, use arrow keys between nearby cards, Page Up for the visual parent, Page Down for the first child, Home for the current session, Control Home for the root, slash to open search, F to focus a selected lineage, and Escape to close details or diagnostics or clear focus.</div>
   <div class="sr-only" id="live" aria-live="polite"></div>
   <script type="module">
     import {
       applyPinchGesture,
+      buildLineageFocusSet,
+      cardMarkerLayout,
+      describeMeaningfulConstellationChange,
       filterConstellationView,
       fitWidthScale,
       formatModelLabel,
+      isPlainSearchShortcut,
       layoutResponsiveConstellation,
-      resolveProjectFilter
+      programmaticScrollBehavior,
+      resolveVisibleSelection,
+      normalizeSearchQuery,
+      resolveProjectFilter,
+      selectConstellationVisibility,
+      visualParentId
     } from "./layout.mjs";
+    import {
+      buildAttentionQueue,
+      resolveAttentionFocus
+    } from "./attention.mjs";
 
     const config = ${serializedConfig};
     const svgNs = "http://www.w3.org/2000/svg";
+    const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
     const statusOrder = [
       "waiting-user", "waiting-plan", "blocked", "failed",
       "busy", "idle", "archived", "completed"
@@ -440,26 +905,42 @@ export function renderConstellationHtml(config) {
     };
     const state = {
       data: null,
+      visibleState: null,
       layout: null,
+      attention: null,
+      attentionRovingId: null,
       selectedId: null,
+      rovingId: null,
       status: config.initialStatus || "",
       repository: config.initialRepository || "",
       project: config.initialProject || "",
+      search: "",
+      focusSessionId: "",
       scope: config.initialScope === "all" ? "all" : "tree",
-      completedExpanded: false,
+      completedExpanded: config.initialStatus === "completed",
+      archivedExpanded: config.initialStatus === "archived",
+      expandedGroupIds: new Set(),
+      expandedOverflowIds: new Set(),
+      revealedIds: new Set(),
       transform: { x: 0, y: 0, k: 1 },
       pointers: new Map(),
       gesture: null,
       firstRender: true
     };
     const elements = Object.fromEntries([
-      "summary", "scopeSelect", "refresh", "home", "fitWidth", "zoomOut", "zoomIn",
+      "summary", "scopeSelect", "trustToggle", "trustLabel", "refresh", "searchFocus", "showAll", "home", "fitWidth", "zoomOut", "zoomIn",
       "filtersToggle", "filters", "statusFilter", "repoFilter", "legend",
-      "projectFilter",
+      "projectFilter", "searchInput", "filterSummary",
+      "attentionRadar", "attentionHeading", "attentionCount", "attentionSummary", "attentionList",
+      "attentionOverflow", "attentionEmpty",
       "stage", "constellation", "viewport", "edges", "nodes", "empty",
-      "inspector", "inspectorClose", "detailName", "detailStatus", "details",
-      "sourceNote", "live"
+      "inspector", "inspectorClose", "focusSelected", "detailName", "detailStatus", "details",
+      "sourceNote", "diagnostics", "diagnosticsClose", "trustSummary",
+      "demoNotice", "sourceDiagnostics", "provenanceDetails", "privacyNote", "live"
     ].map((id) => [id, document.getElementById(id)]));
+    if (window.matchMedia("(max-width: 480px)").matches) {
+      elements.attentionRadar.open = false;
+    }
 
     function svgElement(name, attributes) {
       const item = document.createElementNS(svgNs, name);
@@ -493,6 +974,64 @@ export function renderConstellationHtml(config) {
       return leaf;
     }
 
+    function nodeStatusMarker(status, attributes = {}) {
+      const marker = svgElement("g", {
+        class: "node-status-marker status-" + status,
+        "aria-hidden": "true",
+        ...attributes
+      });
+      const shape = (name, shapeAttributes) => marker.appendChild(
+        svgElement(name, shapeAttributes)
+      );
+      if (status === "idle") {
+        shape("circle", { class: "marker-outline", cx: 0, cy: 0, r: 6 });
+        shape("path", { class: "marker-line", d: "M -2 0 H 2" });
+      } else if (status === "completed") {
+        shape("circle", { class: "marker-fill", cx: 0, cy: 0, r: 6 });
+        shape("path", { class: "marker-line", d: "M -3 0 L -1 2.3 L 3.5 -2.5" });
+      } else if (status === "waiting-user") {
+        shape("rect", {
+          class: "marker-fill",
+          x: -5,
+          y: -5,
+          width: 10,
+          height: 10,
+          rx: 1.5,
+          transform: "rotate(45)"
+        });
+        shape("path", { class: "marker-line", d: "M 0 -3 V 1 M 0 3.3 V 3.5" });
+      } else if (status === "waiting-plan") {
+        shape("circle", { class: "marker-fill", cx: 0, cy: 0, r: 6 });
+        shape("path", { class: "marker-line", d: "M 0 -3 V 0 L 2.7 1.7" });
+      } else if (status === "blocked") {
+        shape("path", {
+          class: "marker-fill",
+          d: "M -3.5 -6 H 3.5 L 6 -3.5 V 3.5 L 3.5 6 H -3.5 L -6 3.5 V -3.5 Z"
+        });
+        shape("path", { class: "marker-line", d: "M -2.5 2.5 L 2.5 -2.5" });
+      } else if (status === "failed") {
+        shape("circle", { class: "marker-fill", cx: 0, cy: 0, r: 6 });
+        shape("path", {
+          class: "marker-line",
+          d: "M -2.4 -2.4 L 2.4 2.4 M 2.4 -2.4 L -2.4 2.4"
+        });
+      } else if (status === "archived") {
+        shape("rect", {
+          class: "marker-fill",
+          x: -6,
+          y: -5,
+          width: 12,
+          height: 10,
+          rx: 1
+        });
+        shape("path", { class: "marker-line", d: "M -3 -1 H 3 M 0 -1 V 2" });
+      } else {
+        shape("circle", { class: "marker-fill", cx: 0, cy: 0, r: 6 });
+        shape("circle", { class: "marker-line", cx: 0, cy: 0, r: 2 });
+      }
+      return marker;
+    }
+
     function elapsed(iso) {
       const start = Date.parse(iso || "");
       if (!Number.isFinite(start)) return "";
@@ -503,7 +1042,27 @@ export function renderConstellationHtml(config) {
       return Math.floor(minutes / 60) + "h " + (minutes % 60) + "m";
     }
 
+    function compactAge(milliseconds) {
+      if (!Number.isFinite(milliseconds)) return "";
+      const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+      if (seconds < 60) return "<1m";
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return minutes + "m";
+      const hours = Math.floor(minutes / 60);
+      return hours < 48 ? hours + "h" : Math.floor(hours / 24) + "d";
+    }
+
     function statusText(node) {
+      if (node.isOverflowSummary) {
+        return node.overflowExpanded
+          ? "Collapse " + node.totalCount + " sessions"
+          : "Expand " + node.hiddenCount + " hidden sessions";
+      }
+      if (node.isRepositoryGroup) {
+        return node.groupExpanded
+          ? "Collapse " + node.totalCount + " sessions"
+          : "Expand " + node.hiddenCount + " grouped sessions";
+      }
       if (node.synthetic) return "Grouping only";
       const base = statusLabels[node.status] || node.status;
       return node.status === "busy" && node.busySince
@@ -513,17 +1072,21 @@ export function renderConstellationHtml(config) {
 
     function filteredState() {
       if (!state.data) return null;
-      return filterConstellationView(state.data, {
+      const filtered = filterConstellationView(state.data, {
         status: state.status,
         repository: state.repository,
         project: state.project
+      });
+      return selectConstellationVisibility(filtered, {
+        search: state.search,
+        focusSessionId: state.focusSessionId
       });
     }
 
     function stageSize() {
       const rect = elements.stage.getBoundingClientRect();
       return {
-        width: Math.max(320, rect.width),
+        width: Math.max(280, rect.width),
         height: Math.max(320, rect.height)
       };
     }
@@ -564,7 +1127,7 @@ export function renderConstellationHtml(config) {
       applyTransform();
     }
 
-    function appendDetail(label, value, code) {
+    function appendDefinition(target, label, value, code) {
       if (!value) return;
       const dt = document.createElement("dt");
       dt.textContent = label;
@@ -572,7 +1135,33 @@ export function renderConstellationHtml(config) {
       const content = code ? document.createElement("code") : document.createElement("span");
       content.textContent = value;
       dd.appendChild(content);
-      elements.details.append(dt, dd);
+      target.append(dt, dd);
+    }
+
+    function appendDetail(label, value, code) {
+      appendDefinition(elements.details, label, value, code);
+    }
+
+    function provenanceText(field, fallback = "Unavailable") {
+      if (!field) return fallback;
+      if (field.kind === "demo") return "Demo decoration";
+      if (field.kind === "inferred") {
+        const sources = (field.sources || []).map((source) => ({
+          appDatabase: "app database",
+          sessionStore: "session store",
+          eventMetadata: "event metadata"
+        }[source])).filter(Boolean);
+        return sources.length
+          ? "Inferred from " + sources.join(" and ")
+          : "Inferred from available metadata";
+      }
+      if (field.kind === "unavailable") return "Unavailable";
+      const source = {
+        appDatabase: "app database",
+        sessionStore: "session store",
+        eventMetadata: "event metadata"
+      }[field.source];
+      return source ? "Recorded in " + source : "Recorded";
     }
 
     function appendModelDetail(node) {
@@ -585,8 +1174,8 @@ export function renderConstellationHtml(config) {
       if (node.isLocalModel) {
         dd.appendChild(localModelLeaf());
         const localLabel = document.createElement("span");
-        localLabel.className = node.demoLocalModel ? "demo-local-model" : "sr-only";
-        localLabel.textContent = node.demoLocalModel ? "Demo local model" : "Local model";
+        localLabel.className = "local-model-label";
+        localLabel.textContent = node.demoLocalModel ? "Demo local runtime" : "Local runtime";
         dd.appendChild(localLabel);
       }
       const content = document.createElement("span");
@@ -595,9 +1184,29 @@ export function renderConstellationHtml(config) {
       elements.details.append(dt, dd);
     }
 
+    function lineageText(node) {
+      const focused = buildLineageFocusSet(state.data?.nodes, node.id);
+      const byId = new Map((state.data?.nodes || []).map((item) => [item.id, item]));
+      let ancestors = 0;
+      let current = node;
+      const visited = new Set();
+      while (current && !visited.has(current.id)) {
+        visited.add(current.id);
+        const parentId = visualParentId(current);
+        if (!parentId || !byId.has(parentId)) break;
+        ancestors++;
+        current = byId.get(parentId);
+      }
+      const descendants = Math.max(0, focused.size - ancestors - 1);
+      return ancestors + " ancestor" + (ancestors === 1 ? "" : "s") +
+        " · " + descendants + " descendant" + (descendants === 1 ? "" : "s");
+    }
+
     function openInspector(node, announce) {
-      if (node.synthetic) return;
+      if (node.synthetic || node.isRepositoryGroup || node.isOverflowSummary) return;
+      closeDiagnostics({ restoreFocus: false });
       state.selectedId = node.id;
+      state.rovingId = node.id;
       elements.inspector.classList.add("open");
       elements.inspector.setAttribute("aria-hidden", "false");
       elements.detailName.textContent = node.name;
@@ -614,13 +1223,37 @@ export function renderConstellationHtml(config) {
         [node.isCurrent ? "Current session" : "", node.isRoot ? "Root coordinator" : ""]
           .filter(Boolean).join(" · ")
       );
+      appendDetail("Lineage", lineageText(node));
       appendDetail("Task", node.task);
       appendDetail("Pull request", node.pullRequest);
       appendDetail("Issue", node.issue);
       appendDetail("Human gate", node.humanGate?.label);
       appendDetail("Busy elapsed", node.status === "busy" ? elapsed(node.busySince) : "");
-      appendDetail("Last activity", node.updatedAt ? new Date(node.updatedAt).toLocaleString() : "");
+      const attentionItem = state.attention?.items.find((item) => item.id === node.id);
+      appendDetail("Attention", attentionItem?.label);
+      appendDetail(
+        "Inactive for",
+        attentionItem?.kind === "inactive-busy"
+          ? compactAge(attentionItem.ageMs)
+          : ""
+      );
+      appendDetail(
+        "Last meaningful activity",
+        node.lastActivityAt
+          ? new Date(node.lastActivityAt).toLocaleString()
+          : node.updatedAt
+            ? new Date(node.updatedAt).toLocaleString()
+            : ""
+      );
       appendDetail("Session ID", node.id, true);
+      elements.sourceNote.textContent =
+        "Repository: " + provenanceText(node.provenance?.repository) + ". " +
+        "Relationship: " + provenanceText(node.provenance?.relationship) + ". " +
+        "Model: " + provenanceText(node.provenance?.model) + ". " +
+        "Status: " + provenanceText(node.provenance?.status) + ".";
+      elements.focusSelected.textContent =
+        state.focusSessionId === node.id ? "Focused" : "Focus lineage";
+      elements.focusSelected.disabled = state.focusSessionId === node.id;
       updateSelection();
       if (announce) elements.live.textContent = "Opened details for " + node.name + ", " + statusText(node);
     }
@@ -628,9 +1261,241 @@ export function renderConstellationHtml(config) {
     function closeInspector({ restoreFocus = true } = {}) {
       elements.inspector.classList.remove("open");
       elements.inspector.setAttribute("aria-hidden", "true");
-      if (restoreFocus && state.selectedId) {
-        elements.nodes.querySelector('[data-id="' + CSS.escape(state.selectedId) + '"]')?.focus();
+      if (restoreFocus && state.selectedId) focusNode(state.selectedId);
+    }
+
+    function focusNode(nodeId, { reveal = true, smooth = true } = {}) {
+      let group = elements.nodes.querySelector(
+        '[data-id="' + CSS.escape(nodeId) + '"]'
+      );
+      if (
+        !group &&
+        reveal &&
+        state.data?.nodes.some((node) => node.id === nodeId && !node.synthetic)
+      ) {
+        state.revealedIds.add(nodeId);
+        render();
+        group = elements.nodes.querySelector(
+          '[data-id="' + CSS.escape(nodeId) + '"]'
+        );
       }
+      if (!group) return false;
+      state.rovingId = nodeId;
+      updateSelection();
+      group.focus({ preventScroll: true });
+      if (reveal) {
+        group.scrollIntoView({
+          block: "nearest",
+          inline: "nearest",
+          behavior: programmaticScrollBehavior({
+            smooth,
+            reducedMotion: reducedMotionQuery.matches
+          })
+        });
+      }
+      return true;
+    }
+
+    function openDiagnostics() {
+      closeInspector({ restoreFocus: false });
+      elements.diagnostics.classList.add("open");
+      elements.diagnostics.setAttribute("aria-hidden", "false");
+      elements.trustToggle.setAttribute("aria-expanded", "true");
+      elements.diagnosticsClose.focus();
+    }
+
+    function closeDiagnostics({ restoreFocus = true } = {}) {
+      elements.diagnostics.classList.remove("open");
+      elements.diagnostics.setAttribute("aria-hidden", "true");
+      elements.trustToggle.setAttribute("aria-expanded", "false");
+      if (restoreFocus) elements.trustToggle.focus();
+    }
+
+    function sourceStatusLabel(status) {
+      return {
+        healthy: "Healthy",
+        partial: "Partial",
+        unavailable: "Unavailable",
+        "query-incompatible": "Query incompatible"
+      }[status] || "Unavailable";
+    }
+
+    function sourceRow(source) {
+      const row = document.createElement("div");
+      row.className = "source-row";
+      const label = document.createElement("span");
+      label.className = "source-label";
+      label.textContent = source.label;
+      const availability = document.createElement("span");
+      availability.className = "availability " + source.status;
+      availability.textContent = sourceStatusLabel(source.status);
+      const description = document.createElement("span");
+      description.className = "source-description";
+      description.textContent = source.provides || "";
+      row.append(label, availability, description);
+      return row;
+    }
+
+    function renderDiagnostics() {
+      if (!state.data) return;
+      const diagnostics = state.data.diagnostics || {};
+      const refresh = diagnostics.refresh || {};
+      const demoActive = diagnostics.demo?.active === true;
+      const presentation = refresh.status === "degraded"
+        ? {
+            label: "Refresh delayed",
+            className: "degraded",
+            summary: "The latest refresh did not complete. The last known sanitized state remains visible."
+          }
+        : demoActive
+          ? {
+              label: "Demo",
+              className: "demo",
+              summary: "Demo decoration is active; source health remains independent below."
+            }
+          : diagnostics.level === "limited"
+            ? {
+                label: "Limited",
+                className: "limited",
+                summary: "Some local metadata sources are partial, unavailable, or query incompatible."
+              }
+            : {
+                label: "Sources ready",
+                className: "",
+                summary: "Expected local metadata capabilities are healthy."
+              };
+      elements.trustLabel.textContent = presentation.label;
+      elements.trustToggle.className =
+        "trust-control" + (presentation.className ? " " + presentation.className : "");
+      elements.trustToggle.setAttribute(
+        "aria-label",
+        "Open trust and diagnostics. " + presentation.label
+      );
+      elements.trustSummary.textContent = presentation.summary;
+      elements.demoNotice.hidden = !demoActive;
+      elements.sourceDiagnostics.replaceChildren();
+      Object.values(diagnostics.sources || {}).forEach((source) => {
+        elements.sourceDiagnostics.appendChild(sourceRow(source));
+      });
+      const events = diagnostics.coverage?.events || {};
+      const relationships = diagnostics.coverage?.relationships || {};
+      const visibility = diagnostics.visibility || {};
+      const lastSuccessful = Date.parse(refresh.lastSuccessfulAt || "");
+      const compaction =
+        state.layout?.diagnostics?.visibility?.compaction || {};
+      const shownRealSessions = Number(
+        compaction.visibleRealSessionCount || 0
+      );
+      const searchQuery = normalizeSearchQuery(state.search);
+      const projectEnforcement =
+        diagnostics.projectFilter?.enforcement ||
+        visibility.projectFilter?.enforcement ||
+        "display";
+      elements.provenanceDetails.replaceChildren();
+      appendDefinition(
+        elements.provenanceDetails,
+        "Scope",
+        (diagnostics.effectiveScope === "all" ? "All sessions" : "Current tree") +
+          " · " + Number(diagnostics.selectedRealSessionCount || 0) +
+          " selected of " + Number(diagnostics.totalDiscoveredSessionCount || 0) +
+          " discovered real sessions."
+      );
+      appendDefinition(
+        elements.provenanceDetails,
+        "Relationships",
+        Number(relationships.recordedEdges || 0) + " recorded lineage edges · " +
+          Number(relationships.syntheticDisplayEdges || 0) +
+          " synthetic display edges. Synthetic edges do not assert provenance."
+      );
+      appendDefinition(
+        elements.provenanceDetails,
+        "App capability",
+        sourceStatusLabel(diagnostics.sources?.appDatabase?.status)
+      );
+      appendDefinition(
+        elements.provenanceDetails,
+        "Session-store capability",
+        sourceStatusLabel(diagnostics.sources?.sessionStore?.status)
+      );
+      appendDefinition(
+        elements.provenanceDetails,
+        "Event coverage",
+        Number(events.observedSessions || 0) + " of " +
+          Number(events.selectedSessions || 0) +
+          " selected sessions contribute bounded event metadata."
+      );
+      appendDefinition(
+        elements.provenanceDetails,
+        "Refresh",
+        refresh.status === "degraded"
+          ? "Delayed · last-good state retained · " +
+            Number(refresh.consecutiveFailures || 1) +
+            " consecutive failed attempt" +
+            (Number(refresh.consecutiveFailures || 1) === 1 ? "" : "s") + "."
+          : "Healthy · latest refresh succeeded."
+      );
+      appendDefinition(
+        elements.provenanceDetails,
+        "Last successful refresh",
+        Number.isFinite(lastSuccessful)
+          ? new Date(lastSuccessful).toLocaleString()
+          : "Not available"
+      );
+      appendDefinition(
+        elements.provenanceDetails,
+        "Demo state",
+        demoActive
+          ? "Active · current session model presentation only."
+          : "Inactive · no demo decoration."
+      );
+      appendDefinition(
+        elements.provenanceDetails,
+        "Search and visibility",
+        (searchQuery
+          ? Number(state.visibleState?.visibility?.directMatchCount || 0) +
+            " direct search matches. "
+          : "Search inactive. ") +
+          Number(compaction.scopeFilteredRealSessionCount || 0) +
+          " sessions remain after scope and filters; " +
+          Number(compaction.selectedRealSessionCount || 0) +
+          " remain after search/focus; " +
+          shownRealSessions + " real cards are shown."
+      );
+      appendDefinition(
+        elements.provenanceDetails,
+        "Compaction",
+        Number(compaction.totalHiddenRealSessionCount || 0) +
+          " real sessions hidden from the canvas · " +
+          Number(compaction.groupedHiddenSessionCount || 0) +
+          " grouped (" +
+          Number(compaction.repositoryGroupedHiddenSessionCount || 0) +
+          " repository, " +
+          Number(compaction.overflowGroupedHiddenSessionCount || 0) +
+          " overflow) · " +
+          Number(compaction.completedShelvedSessionCount || 0) +
+          " completed shelved · " +
+          Number(compaction.archivedShelvedSessionCount || 0) +
+          " archived shelved. Synthetic summaries are excluded."
+      );
+      appendDefinition(
+        elements.provenanceDetails,
+        "Filters",
+        (state.repository
+          ? "Repository is an additive display filter. "
+          : "Repository filter inactive; repository-only remains display filtering. ") +
+          (state.project
+            ? "Project filter is " + projectEnforcement + "-enforced."
+            : "Project filter inactive.")
+      );
+      appendDefinition(
+        elements.provenanceDetails,
+        "Limitations",
+        diagnostics.limitations?.length
+          ? diagnostics.limitations.join(" ")
+          : "None reported by the collector."
+      );
+      elements.privacyNote.textContent = diagnostics.privacy ||
+        "Sensitive content is not returned.";
     }
 
     function updateSelection() {
@@ -638,12 +1503,31 @@ export function renderConstellationHtml(config) {
         const selected = item.dataset.id === state.selectedId;
         item.classList.toggle("selected", selected);
         item.setAttribute("aria-selected", selected ? "true" : "false");
+        item.setAttribute("tabindex", item.dataset.id === state.rovingId ? "0" : "-1");
       });
     }
 
     function nodeAriaLabel(node) {
       if (node.isShelf) {
-        return node.name + ", " + (state.completedExpanded ? "collapse completed agents" : "expand completed agents");
+        const expanded = node.shelfType === "archived"
+          ? state.archivedExpanded
+          : state.completedExpanded;
+        return node.name + ", " +
+          (expanded ? "collapse " : "expand ") + node.shelfType + " agents";
+      }
+      if (node.isRepositoryGroup) {
+        return node.repository + " repository group, " + node.totalCount +
+          " sessions across " + node.groupMemberCount + " sibling branches, " +
+          (node.groupExpanded
+            ? "expanded, collapse repository group"
+            : node.hiddenCount + " hidden, expand repository group");
+      }
+      if (node.isOverflowSummary) {
+        return "Overflow page " + node.overflowPage + ", " + node.totalCount +
+          " sessions across " + node.memberRootCount + " hidden subtrees, " +
+          (node.overflowExpanded
+            ? "expanded, collapse overflow page"
+            : "collapsed, expand overflow page");
       }
       if (node.synthetic) {
         return node.name + ", synthetic grouping container, not a session or parent-child relationship";
@@ -678,19 +1562,204 @@ export function renderConstellationHtml(config) {
         button.type = "button";
         button.className = "status-" + status + (state.status === status ? " active" : "");
         button.title = "Filter to " + statusLabels[status];
-        const dot = document.createElement("span");
-        dot.className = "dot";
+        button.setAttribute("aria-pressed", state.status === status ? "true" : "false");
+        const glyph = document.createElement("span");
+        glyph.className = "status-glyph";
+        glyph.setAttribute("aria-hidden", "true");
         const label = document.createElement("span");
         label.textContent = statusLabels[status] + " " + count;
-        button.append(dot, label);
+        button.append(glyph, label);
         button.addEventListener("click", () => {
           state.status = state.status === status ? "" : status;
           if (state.status === "completed") state.completedExpanded = true;
+          if (state.status === "archived") state.archivedExpanded = true;
           elements.statusFilter.value = state.status;
           render();
         });
         elements.legend.appendChild(button);
       });
+    }
+
+    function attentionAgeText(item) {
+      const age = compactAge(item.ageMs);
+      if (!age) return "";
+      if (item.kind === "inactive-busy") return age + " inactive";
+      if (item.kind === "recent-completed") return age + " ago";
+      return age + " waiting";
+    }
+
+    function resetLocalNavigationForAttention() {
+      state.search = "";
+      state.focusSessionId = "";
+      state.status = "";
+      state.repository = "";
+      elements.searchInput.value = "";
+      elements.statusFilter.value = "";
+      elements.repoFilter.value = "";
+      if (!elements.projectFilter.disabled) {
+        state.project = "";
+        elements.projectFilter.value = "";
+      }
+    }
+
+    function activateAttentionItem(item) {
+      const sourceNode = state.data?.nodes.find((node) => node.id === item.id);
+      if (!sourceNode) return;
+      resetLocalNavigationForAttention();
+      state.revealedIds.add(item.id);
+      state.selectedId = item.id;
+      state.rovingId = item.id;
+      render();
+      openInspector(sourceNode, false);
+      requestAnimationFrame(() => {
+        focusNode(item.id, { smooth: true });
+      });
+      elements.live.textContent =
+        item.label + ": " + item.name +
+        ". Session revealed and details opened.";
+    }
+
+    function renderAttention() {
+      const previousIds = [
+        ...elements.attentionList.querySelectorAll("[data-attention-id]")
+      ].map((button) => button.dataset.attentionId);
+      const focusedId = document.activeElement?.dataset?.attentionId || "";
+      const overflowFocused =
+        document.activeElement === elements.attentionOverflow;
+      const queue = state.attention || buildAttentionQueue(state.data?.nodes);
+      state.attention = queue;
+      const focusResolution = resolveAttentionFocus({
+        previousIds,
+        nextIds: queue.targetIds,
+        focusedId,
+        hasOverflow: queue.overflowCount > 0
+      });
+      state.attentionRovingId =
+        (queue.targetIds.includes(focusedId) && focusedId) ||
+        (queue.targetIds.includes(state.attentionRovingId) &&
+          state.attentionRovingId) ||
+        (focusResolution.kind === "item" && focusResolution.id) ||
+        queue.targetIds[0] ||
+        null;
+      elements.attentionCount.textContent = String(queue.totalCount);
+      elements.attentionSummary.textContent = queue.summary;
+      elements.attentionHeading.setAttribute(
+        "aria-label",
+        "Needs attention. " + queue.summary + ". " +
+          (elements.attentionRadar.open ? "Collapse queue." : "Expand queue.")
+      );
+      elements.attentionEmpty.hidden = queue.totalCount > 0;
+      elements.attentionOverflow.hidden = queue.overflowCount === 0;
+      elements.attentionOverflow.textContent = queue.overflowCount
+        ? "+" + queue.overflowCount + " more summarized"
+        : "";
+      elements.attentionOverflow.setAttribute(
+        "aria-label",
+        queue.overflowCount
+          ? queue.overflowCount +
+              " additional attention sessions are summarized."
+          : "No additional attention sessions."
+      );
+      elements.attentionList.replaceChildren();
+      queue.items.forEach((item) => {
+        const listItem = document.createElement("li");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.tabIndex = item.id === state.attentionRovingId ? 0 : -1;
+        button.className = "attention-item status-" + item.status;
+        button.dataset.attentionId = item.id;
+        button.setAttribute(
+          "aria-label",
+          item.label + ", " + item.shapeLabel + " status: " + item.name +
+            (item.repository ? ", " + item.repository : "") +
+            (attentionAgeText(item) ? ", " + attentionAgeText(item) : "") +
+            ". Reveal session and open details."
+        );
+        const glyph = document.createElement("span");
+        glyph.className = "status-glyph";
+        glyph.setAttribute("aria-hidden", "true");
+        const kind = document.createElement("span");
+        kind.className = "attention-kind";
+        kind.textContent = item.label;
+        const name = document.createElement("span");
+        name.className = "attention-name";
+        name.textContent = item.name;
+        const age = document.createElement("span");
+        age.className = "attention-age";
+        age.textContent = attentionAgeText(item);
+        button.append(glyph, kind, name, age);
+        button.addEventListener("focus", () => {
+          state.attentionRovingId = item.id;
+          elements.attentionList
+            .querySelectorAll("[data-attention-id]")
+            .forEach((candidate) => {
+              candidate.tabIndex =
+                candidate.dataset.attentionId === item.id ? 0 : -1;
+            });
+        });
+        button.addEventListener("keydown", (event) => {
+          const currentIndex = queue.targetIds.indexOf(item.id);
+          let targetIndex;
+          if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+            targetIndex = Math.min(queue.items.length - 1, currentIndex + 1);
+          } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+            targetIndex = Math.max(0, currentIndex - 1);
+          } else if (event.key === "Home") {
+            targetIndex = 0;
+          } else if (event.key === "End") {
+            targetIndex = queue.items.length - 1;
+          } else {
+            return;
+          }
+          event.preventDefault();
+          const targetId = queue.targetIds[targetIndex];
+          elements.attentionList.querySelector(
+            '[data-attention-id="' + CSS.escape(targetId) + '"]'
+          )?.focus();
+        });
+        button.addEventListener("click", () => activateAttentionItem(item));
+        listItem.appendChild(button);
+        elements.attentionList.appendChild(listItem);
+      });
+      if (focusedId) {
+        let focusTarget;
+        if (focusResolution.kind === "item") {
+          focusTarget = elements.attentionList.querySelector(
+            '[data-attention-id="' +
+              CSS.escape(focusResolution.id) +
+              '"]'
+          );
+        } else if (focusResolution.kind === "overflow") {
+          focusTarget = elements.attentionOverflow;
+        } else if (focusResolution.kind === "heading") {
+          focusTarget = elements.attentionHeading;
+        }
+        focusTarget?.focus({ preventScroll: true });
+        if (focusResolution.changed) {
+          if (focusResolution.kind === "item") {
+            const focusedItem = queue.items.find(
+              (item) => item.id === focusResolution.id
+            );
+            elements.live.textContent =
+              "Attention queue updated. Focus moved to " +
+              (focusedItem
+                ? focusedItem.label + ": " + focusedItem.name
+                : "the next attention item") + ".";
+          } else if (focusResolution.kind === "overflow") {
+            elements.live.textContent =
+              "Attention queue updated. Focus moved to the overflow summary.";
+          } else {
+            elements.live.textContent = queue.totalCount
+              ? "Attention queue updated. Focus moved to the Needs attention summary."
+              : "Attention queue is empty. Focus moved to the Needs attention summary.";
+          }
+        }
+      } else if (overflowFocused && queue.overflowCount === 0) {
+        elements.attentionHeading.focus({ preventScroll: true });
+        elements.live.textContent = queue.totalCount
+          ? "Attention overflow cleared. Focus moved to the Needs attention summary."
+          : "Attention queue is empty. Focus moved to the Needs attention summary.";
+      }
     }
 
     function renderRepositories() {
@@ -750,12 +1819,12 @@ export function renderConstellationHtml(config) {
       const halfWidth = state.layout.cardWidth / 2;
       const halfHeight = state.layout.cardHeight / 2;
       if (state.layout.orientation === "vertical") {
-        const startX = source.x + halfWidth;
-        const endX = target.x - halfWidth;
-        const middleX = (startX + endX) / 2;
-        return "M " + startX + " " + source.y +
-          " C " + middleX + " " + source.y + ", " +
-          middleX + " " + target.y + ", " + endX + " " + target.y;
+        const sourceLeft = source.x - halfWidth;
+        const targetLeft = target.x - halfWidth;
+        const railX = Math.max(4, Math.min(sourceLeft, targetLeft) - 6);
+        return "M " + sourceLeft + " " + source.y +
+          " C " + railX + " " + source.y + ", " +
+          railX + " " + target.y + ", " + targetLeft + " " + target.y;
       }
       const startY = source.y + halfHeight;
       const endY = target.y - halfHeight;
@@ -775,27 +1844,80 @@ export function renderConstellationHtml(config) {
             (target?.status === "busy" ? " working" : "") +
             (target?.status === "waiting-user" || target?.status === "waiting-plan" ? " attention" : "") +
             (edge.isShelf ? " shelf" : "") +
-            (edge.kind === "containment" ? " containment" : ""),
+            (edge.kind === "containment" ? " containment" : "") +
+            (edge.isRepositoryGroup ? " repository-group" : "") +
+            (edge.isOverflowSummary ? " overflow-summary" : ""),
           "aria-hidden": "true"
         });
         elements.edges.appendChild(path);
       });
     }
 
-    function toggleCompletedShelf() {
-      state.completedExpanded = !state.completedExpanded;
+    function toggleShelf(node) {
+      const archived = node.shelfType === "archived";
+      if (archived) state.archivedExpanded = !state.archivedExpanded;
+      else state.completedExpanded = !state.completedExpanded;
+      const expanded = archived ? state.archivedExpanded : state.completedExpanded;
       render();
-      elements.live.textContent = state.completedExpanded
-        ? "Completed agents expanded."
-        : "Completed agents collapsed.";
+      elements.live.textContent =
+        (archived ? "Archived" : "Completed") + " agents " +
+        (expanded ? "expanded." : "collapsed.");
+    }
+
+    function toggleRepositoryGroup(node) {
+      if (state.expandedGroupIds.has(node.id)) {
+        state.expandedGroupIds.delete(node.id);
+      } else {
+        state.expandedGroupIds.add(node.id);
+      }
+      state.rovingId = node.id;
+      render();
+      requestAnimationFrame(() => focusNode(node.id, { reveal: false }));
+      elements.live.textContent = node.repository + " repository group " +
+        (node.groupExpanded ? "collapsed." : "expanded.");
+    }
+
+    function toggleOverflowSummary(node) {
+      if (state.expandedOverflowIds.has(node.id)) {
+        state.expandedOverflowIds.delete(node.id);
+      } else {
+        state.expandedOverflowIds.add(node.id);
+      }
+      state.rovingId = node.id;
+      render();
+      requestAnimationFrame(() => focusNode(node.id, { reveal: false }));
+      elements.live.textContent =
+        "Overflow page " + node.overflowPage + " " +
+        (node.overflowExpanded ? "collapsed." : "expanded.");
     }
 
     function renderNodes() {
+      const focusedId = document.activeElement?.classList?.contains("node")
+        ? document.activeElement.dataset.id
+        : "";
       elements.nodes.replaceChildren();
       const width = state.layout.cardWidth;
       const height = state.layout.cardHeight;
+      const visibleIds = new Set(state.layout.nodes.map((node) => node.id));
+      if (!visibleIds.has(state.rovingId)) {
+        state.rovingId =
+          (visibleIds.has(focusedId) && focusedId) ||
+          (visibleIds.has(state.selectedId) && state.selectedId) ||
+          (visibleIds.has(state.data.currentSessionId) && state.data.currentSessionId) ||
+          (visibleIds.has(state.data.rootId) && state.data.rootId) ||
+          state.layout.nodes[0]?.id ||
+          null;
+      }
+      const siblings = new Map();
       state.layout.nodes.forEach((node) => {
-        const modelLabel = node.isShelf
+        const parentKey = visualParentId(node) || "__root__";
+        if (!siblings.has(parentKey)) siblings.set(parentKey, []);
+        siblings.get(parentKey).push(node.id);
+      });
+      const markerLayout = cardMarkerLayout(width, height);
+      state.layout.nodes.forEach((node) => {
+        const modelLabel =
+          node.isShelf || node.isRepositoryGroup || node.isOverflowSummary
           ? ""
           : formatModelLabel(node.model, node.reasoningEffort);
         const hasModelLabel = Boolean(modelLabel);
@@ -803,14 +1925,29 @@ export function renderConstellationHtml(config) {
           class: "node " + node.status + " status-" + node.status +
             (node.isRoot ? " root" : "") +
             (node.isCurrent ? " current" : "") +
+            (state.focusSessionId === node.id ? " focus-origin" : "") +
             (node.isShelf ? " shelf" : "") +
+            (node.isRepositoryGroup ? " repository-group" : "") +
+            (node.isOverflowSummary ? " overflow-summary" : "") +
             (node.synthetic ? " synthetic" : ""),
           transform: "translate(" + node.x + " " + node.y + ")",
-          tabindex: "0",
+          tabindex: node.id === state.rovingId ? "0" : "-1",
           role: "treeitem",
           "aria-label": nodeAriaLabel(node),
           "aria-selected": state.selectedId === node.id ? "true" : "false",
-          "aria-level": Number(node.depth || 0) + 1
+          "aria-current": node.isCurrent ? "true" : undefined,
+          "aria-level": Number(node.depth || 0) + 1,
+          "aria-setsize": siblings.get(visualParentId(node) || "__root__")?.length,
+          "aria-posinset": siblings.get(visualParentId(node) || "__root__")?.indexOf(node.id) + 1,
+          "aria-expanded": node.isOverflowSummary
+            ? String(node.overflowExpanded)
+            : node.isRepositoryGroup
+              ? String(node.groupExpanded)
+              : node.isShelf
+                ? String(node.shelfType === "archived"
+                    ? state.archivedExpanded
+                    : state.completedExpanded)
+                : undefined
         });
         group.dataset.id = node.id;
         const halo = svgElement("circle", {
@@ -818,6 +1955,14 @@ export function renderConstellationHtml(config) {
           r: Math.min(width, height) / 2,
           cx: 0,
           cy: 0
+        });
+        const focusRing = svgElement("rect", {
+          class: "node-focus-ring",
+          x: -width / 2 - 4,
+          y: -height / 2 - 4,
+          width: width + 8,
+          height: height + 8,
+          rx: 14
         });
         const card = svgElement("rect", {
           class: "node-card",
@@ -850,13 +1995,26 @@ export function renderConstellationHtml(config) {
           "text-anchor": "middle"
         });
         status.textContent = node.isShelf
-          ? (state.completedExpanded ? "Collapse shelf" : "Expand shelf")
-          : statusText(node);
-        group.append(halo, card, name, repo);
+          ? ((node.shelfType === "archived"
+              ? state.archivedExpanded
+              : state.completedExpanded)
+              ? "Collapse shelf"
+              : "Expand shelf")
+          : node.isRepositoryGroup
+            ? statusText(node)
+            : statusText(node);
+        const statusMarker = nodeStatusMarker(node.status, {
+          transform:
+            "translate(" + markerLayout.status.x + " " + markerLayout.status.y + ")"
+        });
+        group.append(halo, focusRing, card, statusMarker, name, repo);
         if (hasModelLabel) {
-          const displayedModelLabel = modelLabel.length > 34
-            ? modelLabel.slice(0, 33) + "…"
+          const visibleModelLabel = node.isLocalModel
+            ? "LOCAL · " + modelLabel
             : modelLabel;
+          const displayedModelLabel = visibleModelLabel.length > 34
+            ? visibleModelLabel.slice(0, 33) + "…"
+            : visibleModelLabel;
           const model = svgElement("text", {
             class: "node-model",
             x: node.isLocalModel ? 6 : 0,
@@ -875,38 +2033,104 @@ export function renderConstellationHtml(config) {
         }
         group.appendChild(status);
         if (node.isCurrent) {
+          const markerWidth = 50;
           const marker = svgElement("rect", {
             class: "current-marker",
-            x: width / 2 - 54,
-            y: -height / 2 - 7,
-            width: 50,
+            x: markerLayout.identity.right - markerWidth,
+            y: markerLayout.identity.y,
+            width: markerWidth,
             height: 17,
             rx: 8
           });
           const markerText = svgElement("text", {
             class: "current-marker-text",
-            x: width / 2 - 29,
-            y: -height / 2 + 5,
+            x: markerLayout.identity.right - markerWidth / 2,
+            y: markerLayout.identity.y + 12,
             "text-anchor": "middle"
           });
           markerText.textContent = "CURRENT";
           group.append(marker, markerText);
         }
+        if (node.demoLocalModel) {
+          const markerWidth = 36;
+          const marker = svgElement("rect", {
+            class: "node-trust-marker",
+            x: markerLayout.trust.x - 6,
+            y: markerLayout.trust.y - 7,
+            width: markerWidth,
+            height: 14,
+            rx: 7
+          });
+          const markerText = svgElement("text", {
+            class: "node-trust-marker-text",
+            x: markerLayout.trust.x - 6 + markerWidth / 2,
+            y: markerLayout.trust.y + 2.5,
+            "text-anchor": "middle"
+          });
+          markerText.textContent = "DEMO";
+          group.append(marker, markerText);
+        }
         group.addEventListener("click", () => {
-          if (node.isShelf) toggleCompletedShelf();
+          state.rovingId = node.id;
+          if (node.isShelf) toggleShelf(node);
+          else if (node.isOverflowSummary) toggleOverflowSummary(node);
+          else if (node.isRepositoryGroup) toggleRepositoryGroup(node);
           else if (!node.synthetic) openInspector(node, true);
+        });
+        group.addEventListener("focus", () => {
+          state.rovingId = node.id;
+          updateSelection();
         });
         group.addEventListener("keydown", (event) => handleNodeKey(event, node));
         elements.nodes.appendChild(group);
       });
       updateSelection();
+      if (
+        focusedId &&
+        !focusNode(focusedId, { reveal: false }) &&
+        state.rovingId
+      ) {
+        focusNode(state.rovingId, { reveal: false });
+      }
     }
 
     function handleNodeKey(event, node) {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
-        if (node.isShelf) toggleCompletedShelf();
+        if (node.isShelf) toggleShelf(node);
+        else if (node.isOverflowSummary) toggleOverflowSummary(node);
+        else if (node.isRepositoryGroup) toggleRepositoryGroup(node);
         else if (!node.synthetic) openInspector(node, true);
+        return;
+      }
+      if (event.key === "PageUp") {
+        const parentId = visualParentId(node);
+        if (parentId) {
+          event.preventDefault();
+          event.stopPropagation();
+          focusNode(parentId);
+        }
+        return;
+      }
+      if (event.key === "PageDown") {
+        const child = state.layout.nodes.find(
+          (item) => visualParentId(item) === node.id
+        );
+        if (child) {
+          event.preventDefault();
+          event.stopPropagation();
+          focusNode(child.id);
+        }
+        return;
+      }
+      if (event.key === "Home") {
+        event.preventDefault();
+        event.stopPropagation();
+        focusNode(
+          event.ctrlKey
+            ? state.layout.nodes.find((item) => item.isRoot)?.id || state.data.rootId
+            : state.data.currentSessionId
+        );
         return;
       }
       if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
@@ -927,10 +2151,48 @@ export function renderConstellationHtml(config) {
       }).sort((left, right) => left.score - right.score);
       if (scored[0]) {
         event.preventDefault();
-        elements.nodes.querySelector(
-          '[data-id="' + CSS.escape(scored[0].item.id) + '"]'
-        )?.focus();
+        focusNode(scored[0].item.id);
       }
+    }
+
+    function focusLineage(id) {
+      const node = state.data?.nodes.find((item) => item.id === id && !item.synthetic);
+      if (!node) return;
+      state.focusSessionId = id;
+      state.selectedId = id;
+      state.rovingId = id;
+      render();
+      openInspector(node, false);
+      requestAnimationFrame(() => focusNode(id));
+      elements.live.textContent =
+        "Focused on " + node.name + " with its ancestors and descendants.";
+    }
+
+    function showAll() {
+      const changed = Boolean(
+        state.search ||
+        state.focusSessionId ||
+        state.status ||
+        state.repository ||
+        (!elements.projectFilter.disabled && state.project)
+      );
+      state.search = "";
+      state.focusSessionId = "";
+      state.revealedIds.clear();
+      state.status = "";
+      state.repository = "";
+      if (!elements.projectFilter.disabled) state.project = "";
+      elements.searchInput.value = "";
+      elements.statusFilter.value = "";
+      elements.repoFilter.value = "";
+      if (!elements.projectFilter.disabled) elements.projectFilter.value = "";
+      render();
+      requestAnimationFrame(() =>
+        focusNode(state.selectedId || state.data.currentSessionId, {
+          reveal: false
+        })
+      );
+      if (changed) elements.live.textContent = "Showing all sessions in this scope.";
     }
 
     function updateSummary() {
@@ -941,26 +2203,68 @@ export function renderConstellationHtml(config) {
         ? "All sessions"
         : "Tree";
       elements.summary.textContent =
-        scopeLabel + " · " + live + " live · " +
+        scopeLabel + " · " +
+        state.layout.nodes.length + " shown · " +
+        live + " live · " +
         (counts.completed || 0) + " completed · " + state.layout.orientation;
+      if (state.layout.hiddenSessionCount) {
+        elements.summary.textContent +=
+          " · " + state.layout.hiddenSessionCount + " hidden";
+      }
+      elements.constellation.setAttribute(
+        "aria-orientation",
+        state.layout.orientation === "vertical" ? "horizontal" : "vertical"
+      );
+      const query = normalizeSearchQuery(state.search);
+      const matchCount = state.visibleState?.visibility?.directMatchCount ?? 0;
+      elements.filterSummary.textContent = query
+        ? matchCount + " search result" + (matchCount === 1 ? "" : "s")
+        : state.focusSessionId
+          ? "Lineage focus active"
+          : "";
+      elements.showAll.hidden = !(
+        query ||
+        state.focusSessionId ||
+        state.status ||
+        state.repository ||
+        (!elements.projectFilter.disabled && state.project)
+      );
     }
 
     function render() {
       if (!state.data) return;
       const size = stageSize();
+      state.attention = buildAttentionQueue(state.data.nodes, {
+        now: Date.now()
+      });
       const visibleState = filteredState();
+      state.visibleState = visibleState;
       state.layout = layoutResponsiveConstellation(visibleState, {
         width: size.width,
         height: size.height,
-        completedExpanded: state.completedExpanded
+        completedExpanded: state.completedExpanded,
+        archivedExpanded: state.archivedExpanded,
+        selectedId: state.selectedId,
+        expandedGroupIds: state.expandedGroupIds,
+        expandedOverflowIds: state.expandedOverflowIds,
+        revealedIds: state.revealedIds
       });
+      state.selectedId = resolveVisibleSelection(
+        state.layout.nodes,
+        state.selectedId,
+        [state.data.currentSessionId, state.data.rootId]
+      );
       const byId = new Map(state.layout.nodes.map((node) => [node.id, node]));
       renderEdges(byId);
       renderNodes();
       renderLegend();
+      renderAttention();
       updateSummary();
+      renderDiagnostics();
       const projectFilter = visibleState?.diagnostics?.projectFilter;
-      elements.empty.textContent = projectFilter?.status === "ambiguous"
+      elements.empty.textContent = visibleState?.visibility?.noMatches
+        ? 'No sessions match "' + state.search.trim() + '". Choose Show all to reset.'
+        : projectFilter?.status === "ambiguous"
         ? "The project name is ambiguous. Use its project ID."
         : projectFilter?.status === "unknown"
           ? "The selected project is unavailable."
@@ -969,12 +2273,11 @@ export function renderConstellationHtml(config) {
       applyTransform();
       if (state.firstRender) {
         state.firstRender = false;
-        state.selectedId = state.data.currentSessionId;
-        requestAnimationFrame(() => homeCurrent({ smooth: false }));
+        requestAnimationFrame(() => centerCurrent({ smooth: false }));
       }
     }
 
-    function homeCurrent({ smooth = true, resetZoom = true } = {}) {
+    function centerCurrent({ smooth = true, resetZoom = true } = {}) {
       if (!state.layout) return;
       const target =
         state.layout.nodes.find((node) => node.id === state.data.currentSessionId) ||
@@ -994,10 +2297,11 @@ export function renderConstellationHtml(config) {
           0,
           target.y * state.transform.k + state.transform.y - size.height / 3
         ),
-        behavior: smooth ? "smooth" : "auto"
+        behavior: programmaticScrollBehavior({
+          smooth,
+          reducedMotion: reducedMotionQuery.matches
+        })
       });
-      state.selectedId = target.id;
-      updateSelection();
     }
 
     function fitReadableWidth() {
@@ -1006,12 +2310,64 @@ export function renderConstellationHtml(config) {
       const k = fitWidthScale(size.width, state.layout.width);
       state.transform = { x: 0, y: 0, k };
       applyTransform();
-      homeCurrent({ resetZoom: false });
+      centerCurrent({ resetZoom: false });
     }
 
-    function acceptState(next, announce) {
+    function presentationFingerprint(value) {
+      if (!value) return "";
+      const refresh = value.diagnostics?.refresh;
+      return JSON.stringify({
+        ...value,
+        generatedAt: undefined,
+        diagnostics: {
+          ...value.diagnostics,
+          refresh: refresh
+            ? {
+                ...refresh,
+                lastSuccessfulAt: undefined,
+                consecutiveFailures: refresh.status === "degraded" ? 1 : 0
+              }
+            : undefined
+        }
+      });
+    }
+
+    function acceptState(next, { announceChanges = false } = {}) {
       if (!next || !Array.isArray(next.nodes) || !Array.isArray(next.edges)) return;
+      const announcement = announceChanges
+        ? describeMeaningfulConstellationChange(state.data, next)
+        : "";
+      const presentationChanged =
+        presentationFingerprint(state.data) !== presentationFingerprint(next);
       state.data = next;
+      if (!presentationChanged) {
+        const previousAttention = JSON.stringify(
+          (state.attention?.items || []).map((item) => [item.id, item.kind])
+        );
+        const nextAttention = buildAttentionQueue(next.nodes, {
+          now: Date.now()
+        });
+        const nextAttentionFingerprint = JSON.stringify(
+          nextAttention.items.map((item) => [item.id, item.kind])
+        );
+        state.attention = nextAttention;
+        if (previousAttention !== nextAttentionFingerprint) render();
+        else renderAttention();
+        renderDiagnostics();
+        return;
+      }
+      if (
+        state.focusSessionId &&
+        !next.nodes.some((node) => node.id === state.focusSessionId)
+      ) {
+        state.focusSessionId = "";
+      }
+      if (
+        state.selectedId &&
+        !next.nodes.some((node) => node.id === state.selectedId)
+      ) {
+        state.selectedId = null;
+      }
       state.scope = next.diagnostics?.effectiveScope === "all" ? "all" : "tree";
       elements.scopeSelect.value = state.scope;
       renderRepositories();
@@ -1025,14 +2381,7 @@ export function renderConstellationHtml(config) {
       );
       const selected = next.nodes.find((node) => node.id === state.selectedId);
       if (selected && elements.inspector.classList.contains("open")) openInspector(selected, false);
-      if (announce) {
-        elements.live.textContent = "Constellation refreshed. " +
-          (next.diagnostics?.selectedRealSessionCount || 0) + " sessions available.";
-      }
-      const limitations = next.source?.limitations || [];
-      elements.sourceNote.textContent = limitations.length
-        ? "Sanitized metadata only. " + limitations.join(" ")
-        : "Live sanitized metadata only; prompts, messages, secrets, and file contents are not returned.";
+      if (announcement) elements.live.textContent = announcement;
     }
 
     async function fetchState(url, options) {
@@ -1051,8 +2400,32 @@ export function renderConstellationHtml(config) {
               body: "{}"
             })
           : await fetchState(config.stateUrl);
-        acceptState(next, manual);
+        acceptState(next, { announceChanges: !manual });
+        if (manual) {
+          elements.live.textContent = "Constellation refreshed. " +
+            (next.diagnostics?.selectedRealSessionCount || 0) + " sessions available.";
+        }
       } catch {
+        if (state.data) {
+          const refresh = state.data.diagnostics?.refresh || {};
+          state.data = {
+            ...state.data,
+            diagnostics: {
+              ...state.data.diagnostics,
+              level: "degraded",
+              refresh: {
+                ...refresh,
+                status: "degraded",
+                usingLastGood: true,
+                consecutiveFailures: Math.max(
+                  1,
+                  Number(refresh.consecutiveFailures || 0)
+                )
+              }
+            }
+          };
+          renderDiagnostics();
+        }
         elements.live.textContent = "Constellation refresh failed. Existing state remains visible.";
       } finally {
         elements.refresh.disabled = false;
@@ -1069,7 +2442,7 @@ export function renderConstellationHtml(config) {
           body: JSON.stringify({ scope })
         });
         state.firstRender = true;
-        acceptState(next, false);
+        acceptState(next);
         elements.live.textContent =
           "View changed to " + (scope === "all" ? "All sessions" : "Tree") + ". " +
           (next.diagnostics?.selectedRealSessionCount || 0) + " sessions available.";
@@ -1121,9 +2494,31 @@ export function renderConstellationHtml(config) {
     }
 
     elements.refresh.addEventListener("click", () => refresh(true));
+    elements.attentionRadar.addEventListener("toggle", () => {
+      elements.attentionHeading.setAttribute(
+        "aria-label",
+        "Needs attention. " + (state.attention?.summary || "Checking operational state") +
+          ". " + (elements.attentionRadar.open ? "Collapse queue." : "Expand queue.")
+      );
+    });
+    elements.attentionOverflow.addEventListener("click", () => {
+      elements.live.textContent =
+        (state.attention?.overflowCount || 0) +
+        " additional attention sessions are summarized. Use status filters or search to inspect them.";
+    });
+    elements.trustToggle.addEventListener("click", () => {
+      if (elements.diagnostics.classList.contains("open")) closeDiagnostics();
+      else openDiagnostics();
+    });
+    elements.searchFocus.addEventListener("click", () => {
+      elements.filters.classList.add("open");
+      elements.filtersToggle.setAttribute("aria-expanded", "true");
+      elements.searchInput.focus();
+    });
+    elements.showAll.addEventListener("click", showAll);
     elements.scopeSelect.value = state.scope;
     elements.scopeSelect.addEventListener("change", () => switchScope(elements.scopeSelect.value));
-    elements.home.addEventListener("click", () => homeCurrent());
+    elements.home.addEventListener("click", () => centerCurrent());
     elements.fitWidth.addEventListener("click", fitReadableWidth);
     elements.zoomIn.addEventListener("click", () => setZoom(state.transform.k * 1.16));
     elements.zoomOut.addEventListener("click", () => setZoom(state.transform.k / 1.16));
@@ -1132,10 +2527,20 @@ export function renderConstellationHtml(config) {
       elements.filtersToggle.setAttribute("aria-expanded", open ? "true" : "false");
     });
     elements.inspectorClose.addEventListener("click", () => closeInspector());
+    elements.diagnosticsClose.addEventListener("click", () => closeDiagnostics());
+    elements.focusSelected.addEventListener("click", () =>
+      focusLineage(state.selectedId)
+    );
+    elements.searchInput.value = state.search;
+    elements.searchInput.addEventListener("input", () => {
+      state.search = elements.searchInput.value;
+      render();
+    });
     elements.statusFilter.value = state.status;
     elements.statusFilter.addEventListener("change", () => {
       state.status = elements.statusFilter.value;
       if (state.status === "completed") state.completedExpanded = true;
+      if (state.status === "archived") state.archivedExpanded = true;
       render();
     });
     elements.repoFilter.addEventListener("change", () => {
@@ -1201,16 +2606,44 @@ export function renderConstellationHtml(config) {
     elements.constellation.addEventListener("pointercancel", finishPointer);
     elements.constellation.addEventListener("lostpointercapture", finishPointer);
     document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && elements.diagnostics.classList.contains("open")) {
+        event.preventDefault();
+        closeDiagnostics();
+        return;
+      }
       if (event.key === "Escape" && elements.inspector.classList.contains("open")) {
         event.preventDefault();
         closeInspector();
+        return;
       }
-      if (event.target.matches("select, button")) return;
+      if (event.key === "Escape" && state.focusSessionId) {
+        event.preventDefault();
+        state.focusSessionId = "";
+        render();
+        requestAnimationFrame(() =>
+          focusNode(state.selectedId || state.data.currentSessionId)
+        );
+        elements.live.textContent =
+          "Lineage focus cleared. Search and filters remain active.";
+        return;
+      }
+      if (
+        isPlainSearchShortcut(event) &&
+        !event.target.matches("input, select, button")
+      ) {
+        event.preventDefault();
+        elements.filters.classList.add("open");
+        elements.filtersToggle.setAttribute("aria-expanded", "true");
+        elements.searchInput.focus();
+        return;
+      }
+      if (event.target.matches("input, select, button")) return;
       if (event.key === "+" || event.key === "=") setZoom(state.transform.k * 1.16);
       if (event.key === "-") setZoom(state.transform.k / 1.16);
       if (event.key === "Home") {
+        if (event.ctrlKey) return;
         event.preventDefault();
-        homeCurrent();
+        centerCurrent();
       }
     });
 
@@ -1218,14 +2651,16 @@ export function renderConstellationHtml(config) {
       if (!state.data) return;
       const previousOrientation = state.layout?.orientation;
       render();
-      if (previousOrientation !== state.layout.orientation) homeCurrent({ smooth: false });
+      if (previousOrientation !== state.layout.orientation) {
+        centerCurrent({ smooth: false });
+      }
     });
     resizeObserver.observe(elements.stage);
 
     refresh(false);
     const events = new EventSource(config.eventsUrl);
     events.addEventListener("state", (event) => {
-      try { acceptState(JSON.parse(event.data), true); } catch {}
+      try { acceptState(JSON.parse(event.data), { announceChanges: true }); } catch {}
     });
     events.onerror = () => {
       window.setTimeout(() => refresh(false), 3000);
@@ -1241,6 +2676,19 @@ export function renderConstellationHtml(config) {
         if (selected) elements.detailStatus.lastElementChild.textContent = statusText(selected);
       }
     }, 1000);
+    window.setInterval(() => {
+      if (!state.data) return;
+      const previous = JSON.stringify(
+        (state.attention?.items || []).map((item) => [item.id, item.kind])
+      );
+      const next = buildAttentionQueue(state.data.nodes, { now: Date.now() });
+      state.attention = next;
+      const current = JSON.stringify(
+        next.items.map((item) => [item.id, item.kind])
+      );
+      if (previous !== current) render();
+      else renderAttention();
+    }, 30000);
     window.setInterval(() => refresh(false), 30000);
   </script>
 </body>

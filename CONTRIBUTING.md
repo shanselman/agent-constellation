@@ -29,8 +29,10 @@ After changing extension code:
 2. Open Agent Constellation from a project session.
 3. Verify the `refresh` and `get_state` actions.
 4. Check wide and narrow/tall layouts.
-5. Exercise keyboard navigation, pan, wheel zoom, pinch zoom, filters, the inspector, and the completed shelf as applicable.
+5. Exercise search, lineage focus/reset, repository/overflow expansion persistence, hidden-target reveal, keyboard navigation, pan, wheel zoom, pinch zoom, filters, the inspector, and completed/archived shelves as applicable.
 6. Run `npm run check`.
+
+Scale-related changes must preserve real `parentId` lineage and synthetic containment, use `syntheticParentId || parentId` for visual ancestry, keep current/selected/search/focus/explicit-reveal targets reachable, and cover 280, 320, 480, 700, and 960 pixel panes. Default layouts must stay within the tested hard card/height budget for shared repositories, unique repositories, Home chats, and dense attention states. Repository and overflow grouping remain deterministic and synthetic; expanded summary IDs must survive rerenders.
 
 ## Cafeteria-style experiments
 

@@ -6,33 +6,67 @@ import path from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import {
+    ATTENTION_THRESHOLDS,
+    buildAttentionQueue,
+    classifyAttentionNode,
+    lastMeaningfulActivityTimestamp,
+    resolveAttentionFocus,
+} from "./attention.mjs";
+import {
     CANVAS_OPEN_INPUT_SCHEMA,
     FILTER_PROPERTIES,
     collectConstellationState,
     decorateConstellationForDemo,
+    diagnosticsLevel,
     filterConstellationState,
     isLocalModelMetadata,
     layoutConstellation,
     normalizeConstellation,
+    normalizeSourceState,
     overviewRootId,
+    selectRepositoryMetadata,
     stateFingerprint,
+    summarizeDatabaseCapability,
+    summarizeRelationshipCoverage,
 } from "./data.mjs";
 import {
     applyPinchGesture,
+    archivedShelfId,
+    buildLineageFocusSet,
+    buildProtectedRevealSet,
+    cardMarkerLayout,
+    compactOverflowNodes,
     completedShelfId,
+    defaultGroupingThreshold,
+    defaultMinimumGroupSize,
+    defaultOverflowPageSize,
+    defaultVisibleCardBudget,
+    describeMeaningfulConstellationChange,
     filterConstellationView,
     filteredProjectRootId,
     fitWidthScale,
     formatModelLabel,
+    groupDirectRepositorySiblings,
+    isPlainSearchShortcut,
     layoutResponsiveConstellation,
+    normalizeSearchQuery,
     orientationForSize,
+    overflowSummaryId,
+    programmaticScrollBehavior,
+    resolveVisibleSelection,
+    repositoryGroupId,
     resolveProjectFilter,
+    selectConstellationVisibility,
+    sessionMatchesSearch,
+    summarizeLayoutVisibility,
+    visualParentId,
 } from "./layout.mjs";
 import { renderConstellationHtml } from "./renderer.mjs";
 import {
     closeConstellationServer,
     getOrCreateConstellationServer,
     refreshConstellationServer,
+    withRefreshHealth,
 } from "./server.mjs";
 
 const extensionDir = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, "$1"));
@@ -239,6 +273,140 @@ function crossProjectFixtureState(scope = "tree") {
     );
 }
 
+function scalableFixtureState(
+    totalRealSessions = 121,
+    repositoryCount = 8,
+    scope = "tree"
+) {
+    const childCount = Math.max(0, totalRealSessions - 1);
+    const nodes = [
+        {
+            id: "scale-root",
+            name: "Scale coordinator",
+            projectName: "Scale project",
+            repository: "octo/coordinator",
+            status: "idle",
+        },
+        ...Array.from({ length: childCount }, (_, index) => ({
+            id: `scale-${index}`,
+            parentId: "scale-root",
+            name: `Scale session ${String(index).padStart(4, "0")}`,
+            projectName: "Scale project",
+            repository: `octo/repository-${String(
+                index % repositoryCount
+            ).padStart(2, "0")}`,
+            branch: `feature/${index}`,
+            task: index === 42 ? "Reveal search target" : undefined,
+            status:
+                index === 1
+                    ? "waiting-user"
+                    : index === 2
+                      ? "blocked"
+                      : index === 3
+                        ? "failed"
+                        : index === 0
+                          ? "busy"
+                          : "idle",
+        })),
+    ];
+    return normalizeConstellation(nodes, childCount ? "scale-0" : "scale-root", {
+        appDatabase: true,
+        sessionStore: true,
+        eventMetadata: true,
+        relationships: true,
+        projects: true,
+        scope,
+    });
+}
+
+function shelfOnlyFixtureState(scope = "tree", count = 17) {
+    return normalizeConstellation(
+        [
+            {
+                id: "shelf-root",
+                name: "Shelf coordinator",
+                projectId: "project-shelf",
+                projectName: "Shelf project",
+                repository: "octo/shelf",
+                status: "idle",
+            },
+            ...Array.from({ length: count }, (_, index) => ({
+                id: `shelved-${index}`,
+                parentId: "shelf-root",
+                name: `Shelved session ${index}`,
+                projectId: "project-shelf",
+                projectName: "Shelf project",
+                repository: `octo/completed-${index}`,
+                status: "completed",
+                task: index === 0 ? "Focused completed target" : undefined,
+            })),
+        ],
+        "shelf-root",
+        {
+            appDatabase: true,
+            sessionStore: true,
+            eventMetadata: true,
+            relationships: true,
+            projects: true,
+            scope,
+        }
+    );
+}
+
+function homeChatFixtureState(totalSessions = 600) {
+    return normalizeConstellation(
+        Array.from({ length: totalSessions }, (_, index) => ({
+            id: `home-${index}`,
+            name: `Home chat ${String(index).padStart(4, "0")}`,
+            projectName: "My Copilot",
+            repository: "No project",
+            sessionType: "general_chat",
+            isHomeChat: true,
+            status: "idle",
+        })),
+        "home-0",
+        {
+            appDatabase: true,
+            relationships: true,
+            projects: true,
+            scope: "all",
+        }
+    );
+}
+
+function attentionFixtureState({ uniqueRepositories = false } = {}) {
+    return normalizeConstellation(
+        [
+            {
+                id: "attention-root",
+                name: "Attention coordinator",
+                repository: "octo/coordinator",
+                status: "idle",
+            },
+            ...Array.from({ length: 100 }, (_, index) => ({
+                id: `attention-${index}`,
+                parentId: "attention-root",
+                name: `Attention session ${String(index).padStart(3, "0")}`,
+                repository: uniqueRepositories
+                    ? `octo/attention-${String(index).padStart(3, "0")}`
+                    : "octo/attention",
+                status:
+                    index % 3 === 0
+                        ? "waiting-user"
+                        : index % 3 === 1
+                          ? "blocked"
+                          : "failed",
+            })),
+        ],
+        "attention-0",
+        {
+            appDatabase: true,
+            relationships: true,
+            projects: true,
+        }
+    );
+}
+
 test("normalization sanitizes metadata and layout is deterministic", () => {
     const first = fixtureState();
     const second = fixtureState();
@@ -267,6 +435,26 @@ test("normalization sanitizes metadata and layout is deterministic", () => {
             },
         ]
     );
+    assert.equal(first.version, 3);
+    assert.equal(
+        first.nodes.find((node) => node.id === "root-session").provenance
+            .repository.kind,
+        "recorded"
+    );
+    assert.equal(
+        first.nodes.find((node) => node.id === "busy-child").provenance.status
+            .kind,
+        "inferred"
+    );
+    assert.equal(first.diagnostics.sources.appDatabase.status, "healthy");
+    assert.equal(first.diagnostics.sources.sessionStore.status, "healthy");
+    assert.deepEqual(first.diagnostics.coverage.relationships, {
+        selectedSessions: 3,
+        sessionsWithRecordedParent: 2,
+        recordedEdges: 2,
+        syntheticDisplayEdges: 0,
+    });
+    assert.equal(first.diagnostics.level, "healthy");
 
     const filtered = filterConstellationState(first, { status: "waiting-user" });
     assert.deepEqual(
@@ -274,6 +462,220 @@ test("normalization sanitizes metadata and layout is deterministic", () => {
         ["busy-child", "root-session", "waiting-grandchild"]
     );
     assert.equal(layoutConstellation([], "missing").nodes.length, 0);
+});
+
+test("attention thresholds use inactivity since meaningful activity at exact boundaries", () => {
+    const now = Date.parse("2026-09-26T00:00:00.000Z");
+    const before = (milliseconds) =>
+        new Date(now - milliseconds).toISOString();
+    const queue = buildAttentionQueue(
+        [
+            {
+                id: "waiting-user",
+                name: "Question",
+                repository: "octo/a",
+                status: "waiting-user",
+                updatedAt: before(4_000),
+            },
+            {
+                id: "waiting-plan",
+                name: "Plan",
+                repository: "octo/a",
+                status: "waiting-plan",
+                updatedAt: before(3_000),
+            },
+            {
+                id: "blocked",
+                name: "Permission",
+                repository: "octo/a",
+                status: "blocked",
+                updatedAt: before(2_000),
+            },
+            {
+                id: "failed",
+                name: "Failure",
+                repository: "octo/a",
+                status: "failed",
+                updatedAt: before(1_000),
+            },
+            {
+                id: "inactive-boundary",
+                name: "Inactive runner",
+                repository: "octo/a",
+                status: "busy",
+                busySince: before(60 * 60 * 1000),
+                lastActivityAt: before(
+                    ATTENTION_THRESHOLDS.inactiveBusyMs
+                ),
+                updatedAt: before(1_000),
+            },
+            {
+                id: "active-boundary",
+                name: "Active runner",
+                repository: "octo/a",
+                status: "busy",
+                busySince: before(12 * 60 * 60 * 1000),
+                lastActivityAt: before(
+                    ATTENTION_THRESHOLDS.inactiveBusyMs - 1
+                ),
+            },
+            {
+                id: "recent-boundary",
+                name: "Fresh result",
+                repository: "octo/a",
+                status: "completed",
+                updatedAt: before(
+                    ATTENTION_THRESHOLDS.recentCompletionMs
+                ),
+            },
+            {
+                id: "completed-too-old",
+                name: "Old result",
+                repository: "octo/a",
+                status: "completed",
+                updatedAt: before(
+                    ATTENTION_THRESHOLDS.recentCompletionMs + 1
+                ),
+            },
+            {
+                id: "future-completion",
+                name: "Future result",
+                repository: "octo/a",
+                status: "completed",
+                updatedAt: new Date(now + 1).toISOString(),
+            },
+        ],
+        { now, limit: 20 }
+    );
+    assert.deepEqual(
+        queue.items.map(({ id, kind }) => ({ id, kind })),
+        [
+            { id: "waiting-user", kind: "waiting-user" },
+            { id: "waiting-plan", kind: "waiting-plan" },
+            { id: "blocked", kind: "blocked" },
+            { id: "failed", kind: "failed" },
+            { id: "inactive-boundary", kind: "inactive-busy" },
+            { id: "recent-boundary", kind: "recent-completed" },
+        ]
+    );
+    assert.equal(
+        classifyAttentionNode(
+            {
+                status: "busy",
+                busySince: before(24 * 60 * 60 * 1000),
+                lastActivityAt: before(
+                    ATTENTION_THRESHOLDS.inactiveBusyMs - 1
+                ),
+            },
+            now
+        ),
+        undefined
+    );
+    assert.equal(
+        lastMeaningfulActivityTimestamp({
+            lastActivityAt: before(2_000),
+            updatedAt: before(1_000),
+        }),
+        now - 2_000
+    );
+});
+
+test("attention queue ordering, cap, overflow, and sanitization are deterministic", () => {
+    const now = Date.parse("2026-09-26T00:00:00.000Z");
+    const updatedAt = new Date(now - 1_000).toISOString();
+    const nodes = [
+        ...Array.from({ length: 8 }, (_, index) => ({
+            id: `wait-${String(index).padStart(2, "0")}`,
+            name:
+                index === 0
+                    ? `Alpha\u0000 ${"x".repeat(180)}`
+                    : `Session ${String(index).padStart(2, "0")}`,
+            repository: `octo/${index}`,
+            status: "waiting-user",
+            updatedAt,
+        })),
+        {
+            id: "synthetic",
+            name: "Synthetic",
+            status: "failed",
+            synthetic: true,
+        },
+    ];
+    const first = buildAttentionQueue(nodes, { now, limit: 3 });
+    const second = buildAttentionQueue([...nodes].reverse(), {
+        now,
+        limit: 3,
+    });
+    assert.deepEqual(first.targetIds, second.targetIds);
+    assert.deepEqual(first.targetIds, ["wait-00", "wait-01", "wait-02"]);
+    assert.equal(first.totalCount, 8);
+    assert.equal(first.actionCount, 8);
+    assert.equal(first.updateCount, 0);
+    assert.equal(first.overflowCount, 5);
+    assert.equal(first.summary, "8 need action · +5 more");
+    assert.equal(first.items[0].name.includes("\u0000"), false);
+    assert.equal(first.items[0].name.length <= 140, true);
+});
+
+test("attention focus restoration is deterministic across queue mutations", () => {
+    const previousIds = ["a", "b", "c", "d", "e", "f"];
+    assert.deepEqual(
+        resolveAttentionFocus({
+            previousIds,
+            nextIds: ["x", "b", "c", "d", "e", "f"],
+            focusedId: "c",
+        }),
+        { kind: "item", id: "c", changed: false }
+    );
+    assert.deepEqual(
+        resolveAttentionFocus({
+            previousIds,
+            nextIds: ["a", "c", "d", "e", "f"],
+            focusedId: "b",
+        }),
+        { kind: "item", id: "c", changed: true }
+    );
+    assert.deepEqual(
+        resolveAttentionFocus({
+            previousIds,
+            nextIds: ["a", "b"],
+            focusedId: "c",
+        }),
+        { kind: "item", id: "b", changed: true }
+    );
+    assert.deepEqual(
+        resolveAttentionFocus({
+            previousIds,
+            nextIds: ["x", "a", "b", "c", "d", "e"],
+            focusedId: "f",
+        }),
+        { kind: "item", id: "e", changed: true }
+    );
+    assert.deepEqual(
+        resolveAttentionFocus({
+            previousIds: ["a"],
+            nextIds: [],
+            focusedId: "a",
+            hasOverflow: true,
+        }),
+        { kind: "overflow", changed: true }
+    );
+    assert.deepEqual(
+        resolveAttentionFocus({
+            previousIds: ["a"],
+            nextIds: [],
+            focusedId: "a",
+        }),
+        { kind: "heading", changed: true }
+    );
+    assert.deepEqual(
+        resolveAttentionFocus({
+            previousIds,
+            nextIds: previousIds,
+            focusedId: "",
+        }),
+        { kind: "none" }
+    );
 });
 
 test("model labels use conservative humanization and optional reasoning effort", () => {
@@ -353,6 +755,70 @@ test("local model classification requires explicit provider or runtime prefixes"
     assert.equal(isLocalModelMetadata({ provider: "", model: "" }), false);
 });
 
+test("source capability helpers distinguish healthy, partial, unavailable, and incompatible", () => {
+    assert.equal(normalizeSourceState(true), "healthy");
+    assert.equal(normalizeSourceState(false), "unavailable");
+    assert.equal(normalizeSourceState("partial"), "partial");
+    assert.equal(
+        summarizeDatabaseCapability({
+            opened: true,
+            requiredTables: ["ready"],
+            optionalTables: ["ready"],
+        }),
+        "healthy"
+    );
+    assert.equal(
+        summarizeDatabaseCapability({
+            opened: true,
+            requiredTables: ["ready"],
+            optionalTables: ["missing"],
+        }),
+        "partial"
+    );
+    assert.equal(
+        summarizeDatabaseCapability({
+            opened: true,
+            requiredTables: ["incompatible"],
+        }),
+        "query-incompatible"
+    );
+    assert.equal(
+        summarizeDatabaseCapability({
+            opened: false,
+            requiredTables: ["ready"],
+        }),
+        "unavailable"
+    );
+});
+
+test("recorded session-store repository outranks filesystem fallbacks", () => {
+    assert.deepEqual(
+        selectRepositoryMetadata({
+            sessionStoreRepository: "octo/recorded",
+            projectPath: "D:\\private\\fallback-project",
+        }),
+        {
+            label: "octo/recorded",
+            provenance: {
+                kind: "recorded",
+                source: "sessionStore",
+            },
+        }
+    );
+    assert.deepEqual(
+        selectRepositoryMetadata({
+            projectPath: "D:\\private\\fallback-project",
+        }),
+        {
+            label: "fallback-project",
+            provenance: {
+                kind: "inferred",
+                source: "appDatabase",
+            },
+        }
+    );
+});
+
 test("demo decoration clones state and changes only the current session", () => {
     const source = fixtureState();
     const decorated = decorateConstellationForDemo(source);
@@ -368,6 +834,15 @@ test("demo decoration clones state and changes only the current session", () => 
     assert.equal(current.reasoningEffort, "high");
     assert.equal(current.isLocalModel, true);
     assert.equal(current.demoLocalModel, true);
+    assert.deepEqual(current.provenance.model, {
+        kind: "demo",
+        source: "demoDecoration",
+    });
+    assert.deepEqual(decorated.diagnostics.demo, {
+        active: true,
+        kind: "decoration",
+        scope: "Current session model presentation only.",
+    });
     for (const node of decorated.nodes.filter((node) => node.id !== decorated.currentSessionId)) {
         assert.equal(node.demoLocalModel, undefined);
     }
@@ -424,12 +899,66 @@ test("collector remains compatible when provider metadata is unavailable", () =>
         assert.equal(current.isLocalModel, false);
         assert.equal(current.name.startsWith("Standalone session"), true);
         assert.equal(current.repository, "No project");
-        assert.equal(state.source.relationships, "partial");
-        assert.equal(state.source.projects, "partial");
-        assert.match(state.source.limitations.join(" "), /relationships may be incomplete/i);
-        assert.match(state.source.limitations.join(" "), /Project grouping metadata may be incomplete/i);
+        assert.equal(state.diagnostics.sources.appDatabase.status, "partial");
+        assert.equal(state.diagnostics.sources.sessionStore.status, "unavailable");
+        assert.equal(state.diagnostics.sources.eventMetadata.status, "unavailable");
+        assert.equal(state.diagnostics.capabilities.relationships, "partial");
+        assert.equal(state.diagnostics.capabilities.projects, "partial");
+        assert.equal(state.diagnostics.level, "limited");
+        assert.match(
+            state.diagnostics.limitations.join(" "),
+            /relationships may be incomplete/i
+        );
+        assert.match(
+            state.diagnostics.limitations.join(" "),
+            /Project grouping metadata may be incomplete/i
+        );
     } finally {
         app.close();
+        rmSync(scratch, { recursive: true, force: true });
+    }
+});
+
+test("opened databases with incompatible schemas are not reported healthy", () => {
+    const scratch = path.join(extensionDir, `.test-artifacts-${randomUUID()}`);
+    const appPath = path.join(scratch, "data.db");
+    const storePath = path.join(scratch, "session-store.db");
+    mkdirSync(scratch, { recursive: true });
+    const app = new DatabaseSync(appPath);
+    const store = new DatabaseSync(storePath);
+    try {
+        app.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY);");
+        store.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY);");
+        app.close();
+        store.close();
+        const state = collectConstellationState({
+            currentSessionId: "current",
+            appDatabasePath: appPath,
+            sessionStorePath: storePath,
+            sessionStateRoot: path.join(scratch, "session-state"),
+        });
+        assert.equal(
+            state.diagnostics.sources.appDatabase.status,
+            "query-incompatible"
+        );
+        assert.equal(
+            state.diagnostics.sources.sessionStore.status,
+            "query-incompatible"
+        );
+        assert.equal(state.diagnostics.level, "limited");
+        assert.match(
+            state.diagnostics.limitations.join(" "),
+            /opened, but expected tables or columns are incompatible/i
+        );
+        assert.equal(JSON.stringify(state).includes(appPath), false);
+        assert.equal(JSON.stringify(state).includes(storePath), false);
+    } finally {
+        try {
+            app.close();
+        } catch {}
+        try {
+            store.close();
+        } catch {}
         rmSync(scratch, { recursive: true, force: true });
     }
 });
@@ -573,6 +1102,12 @@ test("all scope preserves real lineage and groups independent roots syntheticall
     assert.equal(all.diagnostics.selectedRealSessionCount, rawNodes.length);
     assert.equal(all.diagnostics.totalDiscoveredSessionCount, rawNodes.length);
     assert.equal(all.diagnostics.independentRealRootCount, 5);
+    assert.deepEqual(all.diagnostics.coverage.relationships, {
+        selectedSessions: rawNodes.length,
+        sessionsWithRecordedParent: 2,
+        recordedEdges: 1,
+        syntheticDisplayEdges: 5,
+    });
     assert.equal(Object.values(all.counts).reduce((sum, count) => sum + count, 0), rawNodes.length);
     assert.equal(all.nodes.find((node) => node.id === overviewRootId).synthetic, true);
     assert.equal(all.nodes.find((node) => node.id === "project-a-child").parentId, "project-a-root");
@@ -606,6 +1141,19 @@ test("all scope preserves real lineage and groups independent roots syntheticall
     assert.deepEqual(
         repositoryFiltered.nodes.map((node) => node.id).sort(),
         [overviewRootId, "project-b-root"].sort()
+    );
+    assert.equal(
+        repositoryFiltered.diagnostics.visibility.repositoryFilter.enforcement,
+        "display"
+    );
+    assert.deepEqual(
+        repositoryFiltered.diagnostics.coverage.relationships,
+        {
+            selectedSessions: 1,
+            sessionsWithRecordedParent: 0,
+            recordedEdges: 0,
+            syntheticDisplayEdges: 1,
+        }
     );
     assert.equal(
         all.nodes.find((node) => node.id === "standalone-cli").isHomeChat,
@@ -841,7 +1389,932 @@ test("cross-project project scopes remain rooted across refresh and reopen", asy
     }
 });
 
-test("responsive layout uses vertical mission-control columns and collapses completed agents", () => {
+test("search normalization matches only sanitized session metadata", () => {
+    assert.equal(
+        normalizeSearchQuery("  Café\\PR-42 / Waiting_User  "),
+        "cafe pr 42 waiting user"
+    );
+    assert.equal(normalizeSearchQuery("\u0000\u0007"), "");
+    const node = {
+        name: "Résumé review",
+        projectName: "Navigation",
+        repository: "octo/agent-tools",
+        branch: "feature/PR-42",
+        pullRequest: "#42",
+        task: "Keyboard focus",
+        provider: "github",
+        model: "gpt-5.6-sol",
+        reasoningEffort: "high",
+        status: "waiting-user",
+    };
+    assert.equal(sessionMatchesSearch(node, "resume pr 42"), true);
+    assert.equal(sessionMatchesSearch(node, "waiting attention"), true);
+    assert.equal(sessionMatchesSearch(node, "private prompt text"), false);
+    assert.equal(sessionMatchesSearch({ ...node, synthetic: true }, "resume"), false);
+});
+
+test("search shortcut accepts only unmodified slash", () => {
+    assert.equal(isPlainSearchShortcut({ key: "/" }), true);
+    assert.equal(isPlainSearchShortcut({ key: "/", ctrlKey: true }), false);
+    assert.equal(isPlainSearchShortcut({ key: "/", metaKey: true }), false);
+    assert.equal(isPlainSearchShortcut({ key: "/", altKey: true }), false);
+    assert.equal(isPlainSearchShortcut({ key: "f" }), false);
+    assert.equal(isPlainSearchShortcut({ key: "f", ctrlKey: true }), false);
+    assert.equal(isPlainSearchShortcut({ key: "f", metaKey: true }), false);
+});
+
+test("lineage focus follows real and synthetic visual parents safely", () => {
+    const source = normalizeConstellation(
+        [
+            {
+                id: "home",
+                name: "Home",
+                repository: "No project",
+                status: "idle",
+            },
+            {
+                id: "real-root",
+                name: "Real root",
+                repository: "octo/example",
+                status: "idle",
+            },
+            {
+                id: "real-child",
+                parentId: "real-root",
+                name: "Real child",
+                repository: "octo/example",
+                status: "busy",
+            },
+            {
+                id: "real-grandchild",
+                parentId: "real-child",
+                name: "Real grandchild",
+                repository: "octo/example",
+                status: "idle",
+            },
+        ],
+        "home",
+        { scope: "all" }
+    );
+    const focused = buildLineageFocusSet(source.nodes, "real-child");
+    assert.deepEqual(
+        [...focused].sort(),
+        [
+            overviewRootId,
+            "real-child",
+            "real-grandchild",
+            "real-root",
+        ].sort()
+    );
+    assert.equal(
+        visualParentId(source.nodes.find((node) => node.id === "real-root")),
+        overviewRootId
+    );
+
+    const cyclic = buildLineageFocusSet(
+        [
+            { id: "a", parentId: "b" },
+            { id: "b", parentId: "a" },
+            { id: "orphan", parentId: "missing" },
+        ],
+        "a"
+    );
+    assert.deepEqual([...cyclic].sort(), ["a", "b"]);
+    assert.deepEqual(
+        [...buildLineageFocusSet([{ id: "orphan", parentId: "missing" }], "orphan")],
+        ["orphan"]
+    );
+});
+
+test("search and focus share exact visibility, ancestry, no-match, and reset behavior", () => {
+    const source = scalableFixtureState(61, 4);
+    const searched = selectConstellationVisibility(source, {
+        search: "reveal target",
+    });
+    assert.equal(searched.visibility.directMatchCount, 1);
+    assert.equal(searched.visibility.noMatches, false);
+    assert.deepEqual(
+        searched.nodes.map((node) => node.id).sort(),
+        ["scale-42", "scale-root"]
+    );
+    assert.deepEqual(searched.edges, [
+        {
+            source: "scale-root",
+            target: "scale-42",
+            kind: "parent-child",
+            synthetic: false,
+        },
+    ]);
+
+    const focused = selectConstellationVisibility(source, {
+        focusSessionId: "scale-42",
+    });
+    assert.deepEqual(
+        focused.nodes.map((node) => node.id).sort(),
+        ["scale-42", "scale-root"]
+    );
+
+    const combined = selectConstellationVisibility(source, {
+        search: "repository 02",
+        focusSessionId: "scale-42",
+    });
+    assert.equal(combined.visibility.directMatchCount, 1);
+    assert.deepEqual(
+        combined.nodes.map((node) => node.id).sort(),
+        ["scale-42", "scale-root"]
+    );
+
+    const noMatches = selectConstellationVisibility(source, {
+        search: "definitely absent",
+    });
+    assert.equal(noMatches.visibility.noMatches, true);
+    assert.equal(noMatches.visibility.directMatchCount, 0);
+    assert.deepEqual(noMatches.nodes, []);
+    assert.deepEqual(noMatches.edges, []);
+
+    const reset = selectConstellationVisibility(source);
+    assert.equal(reset.nodes.length, source.nodes.length);
+    assert.equal(reset.visibility.query, "");
+    assert.equal(reset.visibility.noMatches, false);
+});
+
+test("protected reveal set includes only explicit targets and visual ancestry", () => {
+    const source = scalableFixtureState(61, 4, "all");
+    const protectedIds = buildProtectedRevealSet(source.nodes, {
+        rootId: source.rootId,
+        currentSessionId: source.currentSessionId,
+        selectedId: "scale-10",
+        directMatchIds: ["scale-42"],
+        focusIds: ["scale-20"],
+        revealedIds: ["scale-30"],
+    });
+    for (const id of [
+        overviewRootId,
+        "scale-root",
+        "scale-0",
+        "scale-10",
+        "scale-20",
+        "scale-30",
+        "scale-42",
+    ]) {
+        assert.equal(protectedIds.has(id), true, `${id} should be protected`);
+    }
+    for (const id of ["scale-1", "scale-2", "scale-3"]) {
+        assert.equal(
+            protectedIds.has(id),
+            false,
+            `${id} attention status should remain compactable`
+        );
+    }
+});
+
+test("attention targets reveal through synthetic ancestry and repository groups", () => {
+    const synthetic = normalizeConstellation(
+        [
+            {
+                id: "foreign",
+                name: "Foreign root",
+                projectId: "foreign-project",
+                projectName: "Foreign",
+                repository: "octo/foreign",
+                status: "idle",
+            },
+            {
+                id: "target",
+                parentId: "foreign",
+                name: "Target",
+                projectId: "project-a",
+                projectName: "Project A",
+                repository: "octo/a",
+                status: "completed",
+                updatedAt: "2026-09-25T23:59:00.000Z",
+            },
+        ],
+        "target",
+        { scope: "all", relationships: true, projects: true }
+    );
+    const project = filterConstellationView(synthetic, {
+        project: "Project A",
+    });
+    const target = project.nodes.find((node) => node.id === "target");
+    assert.equal(Boolean(target.syntheticParentId), true);
+    const protectedIds = buildProtectedRevealSet(project.nodes, {
+        rootId: project.rootId,
+        currentSessionId: project.currentSessionId,
+        revealedIds: ["target"],
+    });
+    assert.equal(protectedIds.has("target"), true);
+    assert.equal(protectedIds.has(target.syntheticParentId), true);
+    assert.equal(protectedIds.has(project.rootId), true);
+
+    const dense = scalableFixtureState(121, 8);
+    const layout = layoutResponsiveConstellation(dense, {
+        width: 320,
+        height: 700,
+        revealedIds: ["scale-42"],
+    });
+    assert.equal(layout.nodes.some((node) => node.id === "scale-42"), true);
+    assert.equal(
+        layout.edges.some(
+            (edge) =>
+                edge.source === "scale-root" &&
+                edge.target === "scale-42" &&
+                edge.kind === "parent-child"
+        ),
+        true
+    );
+    assert.equal(layout.protectedIds.includes("scale-42"), true);
+});
+
+test("recent completed and selected archived targets escape collapsed shelves", () => {
+    const source = normalizeConstellation(
+        [
+            {
+                id: "root",
+                name: "Root",
+                repository: "octo/root",
+                status: "idle",
+            },
+            {
+                id: "recent",
+                parentId: "root",
+                name: "Recent completion",
+                repository: "octo/root",
+                status: "completed",
+                updatedAt: "2026-09-25T23:59:00.000Z",
+            },
+            {
+                id: "old",
+                parentId: "root",
+                name: "Old completion",
+                repository: "octo/root",
+                status: "completed",
+                updatedAt: "2026-09-25T20:00:00.000Z",
+            },
+            {
+                id: "archived",
+                parentId: "root",
+                name: "Archived",
+                repository: "octo/root",
+                status: "archived",
+            },
+        ],
+        "root"
+    );
+    const layout = layoutResponsiveConstellation(source, {
+        width: 320,
+        height: 700,
+        revealedIds: ["recent"],
+        selectedId: "archived",
+    });
+    assert.equal(layout.nodes.some((node) => node.id === "recent"), true);
+    assert.equal(layout.nodes.some((node) => node.id === "archived"), true);
+    assert.equal(layout.nodes.some((node) => node.id === "old"), false);
+    assert.equal(
+        layout.nodes.find((node) => node.id === completedShelfId)?.shelfCount,
+        1
+    );
+});
+
+test("repository grouping has exact thresholds, boundaries, and deterministic ordering", () => {
+    const below = scalableFixtureState(defaultGroupingThreshold - 1, 1);
+    const belowGrouped = groupDirectRepositorySiblings(
+        below.nodes,
+        below.rootId,
+        {
+            groupingThreshold: defaultGroupingThreshold,
+            minimumGroupSize: defaultMinimumGroupSize,
+        }
+    );
+    assert.equal(belowGrouped.groupCount, 0);
+    assert.equal(belowGrouped.nodes.length, below.nodes.length);
+
+    const boundary = scalableFixtureState(defaultGroupingThreshold, 1);
+    const first = groupDirectRepositorySiblings(
+        boundary.nodes,
+        boundary.rootId,
+        {
+            groupingThreshold: defaultGroupingThreshold,
+            minimumGroupSize: defaultMinimumGroupSize,
+        }
+    );
+    const second = groupDirectRepositorySiblings(
+        [...boundary.nodes].reverse(),
+        boundary.rootId,
+        {
+            groupingThreshold: defaultGroupingThreshold,
+            minimumGroupSize: defaultMinimumGroupSize,
+        }
+    );
+    const groupId = repositoryGroupId(
+        "scale-root",
+        "octo/repository-00"
+    );
+    assert.equal(first.groupCount, 1);
+    assert.equal(first.hiddenSessionCount, defaultGroupingThreshold - 1);
+    assert.equal(first.nodes.some((node) => node.id === groupId), true);
+    assert.deepEqual(
+        first.nodes.map((node) => node.id),
+        second.nodes.map((node) => node.id)
+    );
+
+    const boundarySize = scalableFixtureState(defaultGroupingThreshold, 20);
+    const noMinimumGroup = groupDirectRepositorySiblings(
+        boundarySize.nodes,
+        boundarySize.rootId,
+        {
+            groupingThreshold: defaultGroupingThreshold,
+            minimumGroupSize: defaultMinimumGroupSize,
+        }
+    );
+    assert.equal(noMinimumGroup.groupCount, 0);
+});
+
+test("overflow compaction is deterministic and honors the explicit hard budget", () => {
+    const source = scalableFixtureState(1001, 1000);
+    const protectedIds = buildProtectedRevealSet(source.nodes, {
+        rootId: source.rootId,
+        currentSessionId: source.currentSessionId,
+    });
+    const first = compactOverflowNodes(source.nodes, source.rootId, {
+        protectedIds,
+        visibleCardBudget: defaultVisibleCardBudget,
+        overflowPageSize: defaultOverflowPageSize,
+    });
+    const second = compactOverflowNodes(
+        [...source.nodes].reverse(),
+        source.rootId,
+        {
+            protectedIds,
+            visibleCardBudget: defaultVisibleCardBudget,
+            overflowPageSize: defaultOverflowPageSize,
+        }
+    );
+    assert.equal(first.nodes.length <= defaultVisibleCardBudget, true);
+    assert.equal(first.overflowCount, 10);
+    assert.equal(first.hiddenSessionCount, 999);
+    assert.equal(first.budgetExceeded, false);
+    assert.deepEqual(
+        first.nodes.map((node) => node.id).sort(),
+        second.nodes.map((node) => node.id).sort()
+    );
+});
+
+test("expanded repository groups persist and selection never dissolves them", () => {
+    const source = scalableFixtureState(81, 4);
+    const groupId = repositoryGroupId(
+        "scale-root",
+        "octo/repository-00"
+    );
+    const collapsed = layoutResponsiveConstellation(source, {
+        width: 480,
+        height: 900,
+    });
+    assert.equal(
+        collapsed.nodes.find((node) => node.id === groupId)?.groupExpanded,
+        false
+    );
+    assert.equal(collapsed.nodes.some((node) => node.id === "scale-4"), false);
+
+    const expandedIds = new Set([groupId]);
+    const expanded = layoutResponsiveConstellation(source, {
+        width: 480,
+        height: 900,
+        expandedGroupIds: expandedIds,
+    });
+    const rerendered = layoutResponsiveConstellation(source, {
+        width: 480,
+        height: 900,
+        selectedId: "scale-4",
+        expandedGroupIds: expandedIds,
+    });
+    for (const layout of [expanded, rerendered]) {
+        assert.equal(
+            layout.nodes.find((node) => node.id === groupId)?.groupExpanded,
+            true
+        );
+        assert.equal(layout.nodes.some((node) => node.id === "scale-4"), true);
+    }
+    assert.equal(expandedIds.has(groupId), true);
+});
+
+test("shelf-only compaction reports 17 hidden real sessions across tree, all, and project scopes", () => {
+    const states = [
+        shelfOnlyFixtureState("tree"),
+        shelfOnlyFixtureState("all"),
+        filterConstellationState(shelfOnlyFixtureState("all"), {
+            project: "project-shelf",
+        }),
+    ];
+    for (const state of states) {
+        const layout = layoutResponsiveConstellation(state, {
+            width: 480,
+            height: 900,
+        });
+        assert.deepEqual(layout.visibilityDiagnostics, {
+            scopeFilteredRealSessionCount: 18,
+            selectedRealSessionCount: 18,
+            excludedBySearchOrFocusCount: 0,
+            visibleRealSessionCount: 1,
+            groupedHiddenSessionCount: 0,
+            repositoryGroupedHiddenSessionCount: 0,
+            overflowGroupedHiddenSessionCount: 0,
+            completedShelvedSessionCount: 17,
+            archivedShelvedSessionCount: 0,
+            totalHiddenRealSessionCount: 17,
+        });
+        assert.deepEqual(
+            layout.diagnostics.visibility.compaction,
+            layout.visibilityDiagnostics
+        );
+        assert.equal(layout.hiddenSessionCount, 17);
+        assert.equal(layout.nodes.some((node) => node.isShelf), true);
+        assert.equal(
+            layout.nodes.filter(
+                (node) =>
+                    !node.synthetic &&
+                    !node.isShelf &&
+                    !node.isRepositoryGroup &&
+                    !node.isOverflowSummary
+            ).length,
+            1
+        );
+        assert.equal(
+            layout.visibilityDiagnostics.visibleRealSessionCount +
+                layout.visibilityDiagnostics.totalHiddenRealSessionCount,
+            layout.visibilityDiagnostics.selectedRealSessionCount
+        );
+    }
+});
+
+test("mixed repository grouping and shelves remain additive through expansion", () => {
+    const state = normalizeConstellation(
+        [
+            {
+                id: "mixed-root",
+                name: "Mixed coordinator",
+                repository: "octo/root",
+                status: "idle",
+            },
+            ...Array.from({ length: 6 }, (_, index) => ({
+                id: `grouped-${index}`,
+                parentId: "mixed-root",
+                name: `Grouped ${index}`,
+                repository: "octo/shared",
+                status: "idle",
+            })),
+            ...Array.from({ length: 4 }, (_, index) => ({
+                id: `done-${index}`,
+                parentId: "mixed-root",
+                name: `Done ${index}`,
+                repository: `octo/done-${index}`,
+                status: "completed",
+            })),
+            ...Array.from({ length: 3 }, (_, index) => ({
+                id: `archive-${index}`,
+                parentId: "mixed-root",
+                name: `Archive ${index}`,
+                repository: `octo/archive-${index}`,
+                status: "archived",
+            })),
+        ],
+        "mixed-root"
+    );
+    const groupId = repositoryGroupId("mixed-root", "octo/shared");
+    const collapsed = layoutResponsiveConstellation(state, {
+        width: 480,
+        height: 900,
+        groupingThreshold: 1,
+        minimumGroupSize: 3,
+        visibleCardBudget: 100,
+    });
+    assert.deepEqual(collapsed.visibilityDiagnostics, {
+        scopeFilteredRealSessionCount: 14,
+        selectedRealSessionCount: 14,
+        excludedBySearchOrFocusCount: 0,
+        visibleRealSessionCount: 1,
+        groupedHiddenSessionCount: 6,
+        repositoryGroupedHiddenSessionCount: 6,
+        overflowGroupedHiddenSessionCount: 0,
+        completedShelvedSessionCount: 4,
+        archivedShelvedSessionCount: 3,
+        totalHiddenRealSessionCount: 13,
+    });
+
+    const groupExpanded = layoutResponsiveConstellation(state, {
+        width: 480,
+        height: 900,
+        groupingThreshold: 1,
+        minimumGroupSize: 3,
+        visibleCardBudget: 100,
+        expandedGroupIds: [groupId],
+    });
+    assert.equal(
+        groupExpanded.visibilityDiagnostics.groupedHiddenSessionCount,
+        0
+    );
+    assert.equal(
+        groupExpanded.visibilityDiagnostics.completedShelvedSessionCount,
+        4
+    );
+    assert.equal(
+        groupExpanded.visibilityDiagnostics.archivedShelvedSessionCount,
+        3
+    );
+    assert.equal(
+        groupExpanded.visibilityDiagnostics.totalHiddenRealSessionCount,
+        7
+    );
+
+    const shelvesExpanded = layoutResponsiveConstellation(state, {
+        width: 480,
+        height: 900,
+        groupingThreshold: 1,
+        minimumGroupSize: 3,
+        visibleCardBudget: 100,
+        expandedGroupIds: [groupId],
+        completedExpanded: true,
+        archivedExpanded: true,
+    });
+    assert.equal(
+        shelvesExpanded.visibilityDiagnostics.totalHiddenRealSessionCount,
+        0
+    );
+    assert.equal(
+        shelvesExpanded.visibilityDiagnostics.visibleRealSessionCount,
+        14
+    );
+    assert.equal(
+        shelvesExpanded.nodes.filter(
+            (node) =>
+                !node.synthetic &&
+                !node.isShelf &&
+                !node.isRepositoryGroup &&
+                !node.isOverflowSummary
+        ).length,
+        14
+    );
+});
+
+test("overflow grouping and shelves report separate hidden components without synthetic counts", () => {
+    const state = normalizeConstellation(
+        [
+            {
+                id: "overflow-root",
+                name: "Overflow coordinator",
+                repository: "octo/root",
+                status: "idle",
+            },
+            ...Array.from({ length: 20 }, (_, index) => ({
+                id: `overflow-real-${index}`,
+                parentId: "overflow-root",
+                name: `Overflow real ${index}`,
+                repository: `octo/unique-${index}`,
+                status: "idle",
+            })),
+            ...Array.from({ length: 4 }, (_, index) => ({
+                id: `overflow-done-${index}`,
+                parentId: "overflow-root",
+                name: `Overflow done ${index}`,
+                repository: `octo/done-${index}`,
+                status: "completed",
+            })),
+        ],
+        "overflow-root"
+    );
+    const layout = layoutResponsiveConstellation(state, {
+        width: 480,
+        height: 900,
+        groupingThreshold: 100,
+        visibleCardBudget: 6,
+        overflowPageSize: 10,
+    });
+    assert.equal(layout.visibilityDiagnostics.selectedRealSessionCount, 25);
+    assert.equal(layout.visibilityDiagnostics.visibleRealSessionCount, 1);
+    assert.equal(
+        layout.visibilityDiagnostics.repositoryGroupedHiddenSessionCount,
+        0
+    );
+    assert.equal(
+        layout.visibilityDiagnostics.overflowGroupedHiddenSessionCount,
+        20
+    );
+    assert.equal(
+        layout.visibilityDiagnostics.completedShelvedSessionCount,
+        4
+    );
+    assert.equal(
+        layout.visibilityDiagnostics.totalHiddenRealSessionCount,
+        24
+    );
+    assert.equal(
+        layout.visibilityDiagnostics.visibleRealSessionCount +
+            layout.visibilityDiagnostics.totalHiddenRealSessionCount,
+        layout.visibilityDiagnostics.selectedRealSessionCount
+    );
+    assert.equal(
+        layout.nodes.some(
+            (node) => node.isShelf || node.isOverflowSummary
+        ),
+        true
+    );
+});
+
+test("filters and focus distinguish excluded sessions from compacted hidden sessions", () => {
+    const source = shelfOnlyFixtureState("all");
+    const filtered = filterConstellationState(source, {
+        status: "completed",
+    });
+    const filteredLayout = layoutResponsiveConstellation(filtered, {
+        width: 480,
+        height: 900,
+    });
+    assert.equal(
+        filteredLayout.visibilityDiagnostics.scopeFilteredRealSessionCount,
+        18
+    );
+    assert.equal(
+        filteredLayout.visibilityDiagnostics.totalHiddenRealSessionCount,
+        17
+    );
+
+    for (const visibleState of [
+        selectConstellationVisibility(source, {
+            search: "focused completed target",
+        }),
+        selectConstellationVisibility(source, {
+            focusSessionId: "shelved-0",
+        }),
+    ]) {
+        const layout = layoutResponsiveConstellation(visibleState, {
+            width: 480,
+            height: 900,
+        });
+        assert.deepEqual(layout.visibilityDiagnostics, {
+            scopeFilteredRealSessionCount: 18,
+            selectedRealSessionCount: 2,
+            excludedBySearchOrFocusCount: 16,
+            visibleRealSessionCount: 2,
+            groupedHiddenSessionCount: 0,
+            repositoryGroupedHiddenSessionCount: 0,
+            overflowGroupedHiddenSessionCount: 0,
+            completedShelvedSessionCount: 0,
+            archivedShelvedSessionCount: 0,
+            totalHiddenRealSessionCount: 0,
+        });
+    }
+
+    assert.deepEqual(
+        summarizeLayoutVisibility(source, {
+            nodes: [
+                {
+                    id: "synthetic",
+                    synthetic: true,
+                    isShelf: true,
+                },
+            ],
+            completedShelvedSessionCount: 17,
+        }),
+        {
+            scopeFilteredRealSessionCount: 18,
+            selectedRealSessionCount: 18,
+            excludedBySearchOrFocusCount: 0,
+            visibleRealSessionCount: 0,
+            groupedHiddenSessionCount: 0,
+            repositoryGroupedHiddenSessionCount: 0,
+            overflowGroupedHiddenSessionCount: 0,
+            completedShelvedSessionCount: 17,
+            archivedShelvedSessionCount: 0,
+            totalHiddenRealSessionCount: 17,
+        }
+    );
+});
+
+test("dense grouping compacts attention while explicit and searched targets retain real edges", () => {
+    const source = scalableFixtureState(121, 8);
+    const layout = layoutResponsiveConstellation(source, {
+        width: 480,
+        height: 900,
+    });
+    assert.equal(layout.nodes.some((node) => node.id === "scale-0"), true);
+    for (const id of ["scale-1", "scale-2", "scale-3"]) {
+        assert.equal(layout.nodes.some((node) => node.id === id), false);
+    }
+    assert.equal(layout.groupCount, 8);
+    assert.equal(layout.hiddenSessionCount, 119);
+
+    const revealed = layoutResponsiveConstellation(source, {
+        width: 480,
+        height: 900,
+        revealedIds: ["scale-2"],
+    });
+    assert.equal(revealed.nodes.some((node) => node.id === "scale-2"), true);
+    assert.equal(
+        revealed.edges.some(
+            (edge) =>
+                edge.source === "scale-root" &&
+                edge.target === "scale-2" &&
+                edge.kind === "parent-child" &&
+                edge.synthetic === false
+        ),
+        true
+    );
+
+    const searched = selectConstellationVisibility(source, {
+        search: "reveal target",
+    });
+    const searchLayout = layoutResponsiveConstellation(searched, {
+        width: 320,
+        height: 700,
+    });
+    assert.deepEqual(
+        searchLayout.nodes.map((node) => node.id).sort(),
+        ["scale-42", "scale-root"]
+    );
+});
+
+test("100+ session overview stays bounded at required pane widths in both orientations", () => {
+    const dense = scalableFixtureState(121, 8);
+    for (const width of [280, 320, 480, 700, 960]) {
+        const layout = layoutResponsiveConstellation(dense, {
+            width,
+            height: width === 960 ? 600 : 900,
+        });
+        assert.equal(layout.orientation, "vertical");
+        assert.equal(layout.width, Math.max(280, width));
+        assert.equal(layout.nodes.length <= defaultVisibleCardBudget, true);
+        assert.equal(layout.height <= 3000, true);
+        assert.equal(layout.hiddenSessionCount, 119);
+        assert.equal(layout.budgetExceeded, false);
+        for (const node of layout.nodes) {
+            assert.equal(node.x - layout.cardWidth / 2 >= 0, true);
+            assert.equal(node.x + layout.cardWidth / 2 <= layout.width, true);
+        }
+    }
+
+    const small = fixtureState();
+    const horizontal = layoutResponsiveConstellation(small, {
+        width: 960,
+        height: 600,
+    });
+    const vertical = layoutResponsiveConstellation(small, {
+        width: 480,
+        height: 700,
+    });
+    assert.equal(horizontal.orientation, "horizontal");
+    assert.equal(vertical.orientation, "vertical");
+});
+
+test("global overflow compaction bounds unique repositories and Home chats", () => {
+    const unique = scalableFixtureState(1001, 1000);
+    const homes = homeChatFixtureState(600);
+    for (const [name, source] of [
+        ["unique repositories", unique],
+        ["Home chats", homes],
+    ]) {
+        for (const width of [320, 480, 700]) {
+            const layout = layoutResponsiveConstellation(source, {
+                width,
+                height: 900,
+            });
+            assert.equal(
+                layout.nodes.length <= defaultVisibleCardBudget,
+                true,
+                `${name} at ${width}px exceeded the card budget`
+            );
+            assert.equal(
+                layout.height <= 3000,
+                true,
+                `${name} at ${width}px exceeded the height budget`
+            );
+            assert.equal(layout.budgetExceeded, false);
+            assert.equal(layout.overflowCount > 0, true);
+        }
+    }
+
+    const selected = layoutResponsiveConstellation(unique, {
+        width: 480,
+        height: 900,
+        selectedId: "scale-500",
+    });
+    assert.equal(selected.nodes.some((node) => node.id === "scale-500"), true);
+    const revealed = layoutResponsiveConstellation(unique, {
+        width: 480,
+        height: 900,
+        revealedIds: ["scale-777"],
+    });
+    assert.equal(revealed.nodes.some((node) => node.id === "scale-777"), true);
+});
+
+test("overflow pages expand persistently and retain original lineage", () => {
+    const source = scalableFixtureState(201, 200);
+    const summaryId = overflowSummaryId("scale-root", 0);
+    const collapsed = layoutResponsiveConstellation(source, {
+        width: 480,
+        height: 900,
+    });
+    assert.equal(
+        collapsed.nodes.find((node) => node.id === summaryId)?.overflowExpanded,
+        false
+    );
+    const expandedIds = new Set([summaryId]);
+    const expanded = layoutResponsiveConstellation(source, {
+        width: 480,
+        height: 900,
+        expandedOverflowIds: expandedIds,
+    });
+    const rerendered = layoutResponsiveConstellation(source, {
+        width: 480,
+        height: 900,
+        expandedOverflowIds: expandedIds,
+    });
+    for (const layout of [expanded, rerendered]) {
+        assert.equal(
+            layout.nodes.find((node) => node.id === summaryId)?.overflowExpanded,
+            true
+        );
+        const revealedNode = layout.nodes.find(
+            (node) => node.id !== "scale-root" && !node.synthetic
+        );
+        assert.ok(revealedNode);
+        assert.equal(
+            layout.edges.some(
+                (edge) =>
+                    edge.source === "scale-root" &&
+                    edge.target === revealedNode.id &&
+                    edge.synthetic === false
+            ),
+            true
+        );
+    }
+});
+
+test("100 attention sessions compact by default and every explicit target is revealable", () => {
+    for (const uniqueRepositories of [false, true]) {
+        const source = attentionFixtureState({ uniqueRepositories });
+        for (const width of [320, 480, 700]) {
+            const layout = layoutResponsiveConstellation(source, {
+                width,
+                height: 900,
+            });
+            assert.equal(layout.nodes.length <= defaultVisibleCardBudget, true);
+            assert.equal(layout.height <= 3000, true);
+            assert.equal(layout.budgetExceeded, false);
+        }
+        for (let index = 0; index < 100; index++) {
+            const id = `attention-${index}`;
+            const revealed = layoutResponsiveConstellation(source, {
+                width: 480,
+                height: 900,
+                revealedIds: [id],
+            });
+            assert.equal(
+                revealed.nodes.some((node) => node.id === id),
+                true,
+                `${id} should be explicitly revealable`
+            );
+        }
+    }
+});
+
+test("scale benchmark matrix stays within hard card and height budgets", () => {
+    const scenarios = [
+        ["shared-repo-1001", scalableFixtureState(1001, 1)],
+        ["unique-repo-1001", scalableFixtureState(1001, 1000)],
+        ["home-chat-600", homeChatFixtureState(600)],
+        ["attention-shared-100", attentionFixtureState()],
+        [
+            "attention-unique-100",
+            attentionFixtureState({ uniqueRepositories: true }),
+        ],
+    ];
+    const iterations = 20;
+    for (const [name, source] of scenarios) {
+        for (const width of [320, 480, 700]) {
+            layoutResponsiveConstellation(source, { width, height: 900 });
+            const startedAt = performance.now();
+            let layout;
+            for (let index = 0; index < iterations; index++) {
+                layout = layoutResponsiveConstellation(source, {
+                    width,
+                    height: 900,
+                });
+            }
+            const averageMilliseconds =
+                (performance.now() - startedAt) / iterations;
+            assert.equal(layout.nodes.length <= defaultVisibleCardBudget, true);
+            assert.equal(layout.height <= 3000, true);
+            assert.equal(layout.budgetExceeded, false);
+            console.log(
+                `benchmark: ${name} @ ${width}px -> ` +
+                    `${layout.nodes.length} cards, ${layout.height}px, ` +
+                    `${averageMilliseconds.toFixed(2)} ms average`
+            );
+        }
+    }
+});
+
+test("responsive layout is right-pane-first across required breakpoints", () => {
     const source = normalizeConstellation(
         [
             {
@@ -873,6 +2346,13 @@ test("responsive layout uses vertical mission-control columns and collapses comp
                 repository: "octo/completed",
                 status: "completed",
             })),
+            ...Array.from({ length: 5 }, (_, index) => ({
+                id: `archived-${index}`,
+                parentId: "root",
+                name: `Archived child ${index}`,
+                repository: "octo/archived",
+                status: "archived",
+            })),
             {
                 id: "deep",
                 parentId: "current",
@@ -884,21 +2364,31 @@ test("responsive layout uses vertical mission-control columns and collapses comp
         "current"
     );
 
-    for (const [width, height] of [
-        [420, 900],
-        [700, 1100],
+    for (const [width, height, orientation] of [
+        [280, 700, "vertical"],
+        [320, 700, "vertical"],
+        [480, 700, "vertical"],
+        [700, 700, "vertical"],
+        [960, 600, "horizontal"],
+        [960, 1200, "vertical"],
     ]) {
         const layout = layoutResponsiveConstellation(source, { width, height });
-        assert.equal(layout.orientation, "vertical");
+        assert.equal(layout.orientation, orientation);
         assert.equal(layout.completedCount, 12);
+        assert.equal(layout.archivedCount, 5);
+        assert.equal(layout.completedShelvedSessionCount, 12);
+        assert.equal(layout.archivedShelvedSessionCount, 5);
+        assert.equal(layout.groupedHiddenSessionCount, 0);
+        assert.equal(layout.totalHiddenRealSessionCount, 17);
+        assert.equal(layout.hiddenSessionCount, 17);
         assert.equal(layout.nodes.some((node) => node.id === completedShelfId), true);
+        assert.equal(layout.nodes.some((node) => node.id === archivedShelfId), true);
         assert.equal(layout.nodes.some((node) => node.id === "completed-0"), false);
+        assert.equal(layout.nodes.some((node) => node.id === "archived-0"), false);
         const root = layout.nodes.find((node) => node.id === "root");
         const waiting = layout.nodes.find((node) => node.id === "waiting");
         const current = layout.nodes.find((node) => node.id === "current");
         const deep = layout.nodes.find((node) => node.id === "deep");
-        assert.equal(root.x < current.x, true);
-        assert.equal(current.x < deep.x, true);
         assert.equal(current.isLocalModel, true);
         assert.equal(
             layout.nodes.find((node) => node.id === completedShelfId).isLocalModel,
@@ -906,8 +2396,28 @@ test("responsive layout uses vertical mission-control columns and collapses comp
         );
         assert.equal(waiting.y <= current.y, true);
         assert.equal(layout.cardWidth >= 172, true);
-        assert.equal(layout.cardHeight, 72);
+        assert.equal(layout.cardHeight, 76);
         assert.equal(layout.height >= height, true);
+        if (orientation === "vertical") {
+            assert.equal(root.x < current.x, true);
+            assert.equal(current.x < deep.x, true);
+            const archivedShelf = layout.nodes.find(
+                (node) => node.id === archivedShelfId
+            );
+            const completedShelf = layout.nodes.find(
+                (node) => node.id === completedShelfId
+            );
+            assert.equal(waiting.y < current.y, true);
+            assert.equal(current.y < archivedShelf.y, true);
+            assert.equal(archivedShelf.y < completedShelf.y, true);
+            assert.equal(layout.width, Math.max(280, width));
+            for (const node of layout.nodes) {
+                assert.equal(node.x - layout.cardWidth / 2 >= 0, true);
+                assert.equal(node.x + layout.cardWidth / 2 <= layout.width, true);
+            }
+        } else {
+            assert.equal(layout.width <= 960, true);
+        }
     }
 
     const expanded = layoutResponsiveConstellation(source, {
@@ -916,21 +2426,211 @@ test("responsive layout uses vertical mission-control columns and collapses comp
         completedExpanded: true,
     });
     assert.equal(expanded.completedCount, 12);
+    assert.equal(expanded.archivedCount, 5);
+    assert.equal(expanded.completedShelvedSessionCount, 0);
+    assert.equal(expanded.archivedShelvedSessionCount, 5);
+    assert.equal(expanded.totalHiddenRealSessionCount, 5);
     assert.equal(expanded.nodes.some((node) => node.id === completedShelfId), true);
+    assert.equal(expanded.nodes.some((node) => node.id === archivedShelfId), true);
     assert.equal(
         expanded.nodes.filter((node) => node.status === "completed" && !node.isShelf).length,
         12
     );
+    assert.equal(
+        expanded.nodes.filter((node) => node.status === "archived" && !node.isShelf)
+            .length,
+        0
+    );
     assert.equal(expanded.height > 900, true);
+
+    const archivedExpanded = layoutResponsiveConstellation(source, {
+        width: 420,
+        height: 900,
+        archivedExpanded: true,
+    });
+    assert.equal(
+        archivedExpanded.nodes.filter(
+            (node) => node.status === "archived" && !node.isShelf
+        ).length,
+        5
+    );
+    assert.equal(
+        archivedExpanded.nodes.filter(
+            (node) => node.status === "completed" && !node.isShelf
+        ).length,
+        0
+    );
+    assert.equal(archivedExpanded.completedShelvedSessionCount, 12);
+    assert.equal(archivedExpanded.archivedShelvedSessionCount, 0);
+    assert.equal(archivedExpanded.totalHiddenRealSessionCount, 12);
 
     const wide = layoutResponsiveConstellation(source, { width: 1200, height: 700 });
     assert.equal(wide.orientation, "horizontal");
     assert.equal(wide.cardHeight, 76);
     assert.equal(wide.nodes.find((node) => node.id === "current").isLocalModel, true);
-    assert.equal(orientationForSize(420, 900), "vertical");
-    assert.equal(orientationForSize(700, 1100), "vertical");
-    assert.equal(orientationForSize(1200, 700), "horizontal");
+    assert.equal(orientationForSize(280, 700), "vertical");
+    assert.equal(orientationForSize(320, 700), "vertical");
+    assert.equal(orientationForSize(480, 700), "vertical");
+    assert.equal(orientationForSize(700, 700), "vertical");
+    assert.equal(
+        orientationForSize(960, 600, { nodeCount: 6, leafCount: 3 }),
+        "horizontal"
+    );
+    assert.equal(
+        orientationForSize(960, 1200, { nodeCount: 6, leafCount: 3 }),
+        "vertical"
+    );
+    assert.equal(
+        orientationForSize(960, 600, { nodeCount: 14, leafCount: 12 }),
+        "vertical"
+    );
     assert.equal(fitWidthScale(420, 2400), 0.82);
+});
+
+test("attention and busy sessions sort ahead of idle and collapsed shelves", () => {
+    const state = normalizeConstellation(
+        [
+            {
+                id: "root",
+                name: "Root",
+                repository: "octo/root",
+                status: "idle",
+            },
+            ...[
+                "completed",
+                "archived",
+                "idle",
+                "busy",
+                "failed",
+                "blocked",
+                "waiting-plan",
+                "waiting-user",
+            ].map((status) => ({
+                id: status,
+                parentId: "root",
+                name: status,
+                repository: "octo/root",
+                status,
+            })),
+        ],
+        "busy"
+    );
+    const layout = layoutResponsiveConstellation(state, {
+        width: 480,
+        height: 900,
+    });
+    assert.deepEqual(
+        layout.nodes
+            .filter((node) => node.id !== "root")
+            .sort((left, right) => left.y - right.y)
+            .map((node) => node.id),
+        [
+            "waiting-user",
+            "waiting-plan",
+            "blocked",
+            "failed",
+            "busy",
+            "idle",
+            archivedShelfId,
+            completedShelfId,
+        ]
+    );
+});
+
+test("dense synthetic overview and project roots stay bounded in half-screen panes", () => {
+    const overview = normalizeConstellation(
+        Array.from({ length: 12 }, (_, index) => ({
+            id: `session-${index}`,
+            name: `Session ${index}`,
+            projectId: `project-${index}`,
+            projectName: `Project ${index}`,
+            repository: `octo/project-${index}`,
+            status: index % 2 ? "idle" : "busy",
+        })),
+        "session-0",
+        { scope: "all", relationships: true, projects: true }
+    );
+    const overviewLayout = layoutResponsiveConstellation(overview, {
+        width: 960,
+        height: 600,
+    });
+    assert.equal(overview.rootId, overviewRootId);
+    assert.equal(overviewLayout.orientation, "vertical");
+    assert.equal(overviewLayout.width, 960);
+    assert.equal(
+        overviewLayout.nodes.filter((node) => !node.synthetic).length,
+        overview.diagnostics.selectedRealSessionCount
+    );
+
+    const project = filterConstellationView(crossProjectFixtureState("all"), {
+        project: "Project A",
+    });
+    const projectLayout = layoutResponsiveConstellation(project, {
+        width: 480,
+        height: 900,
+    });
+    assert.equal(project.rootId, overviewRootId);
+    assert.equal(projectLayout.orientation, "vertical");
+    assert.equal(projectLayout.width, 480);
+    assert.equal(
+        projectLayout.nodes.some(
+            (node) => node.id === "a-waiting" && node.status === "waiting-user"
+        ),
+        true
+    );
+});
+
+test("card corner marker slots are shared, distinct, and future-ready", () => {
+    const slots = cardMarkerLayout(172, 76);
+    assert.deepEqual(Object.keys(slots), [
+        "status",
+        "identity",
+        "activity",
+        "trust",
+    ]);
+    assert.equal(slots.status.x < 0 && slots.status.y < 0, true);
+    assert.equal(slots.identity.right > 0 && slots.identity.y < 0, true);
+    assert.equal(slots.activity.x > 0 && slots.activity.y > 0, true);
+    assert.equal(slots.trust.x < 0 && slots.trust.y > 0, true);
+    assert.notDeepEqual(slots.activity, slots.trust);
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+        scopeUrl: "http://127.0.0.1/scope",
+    });
+    assert.match(html, /class: "node-trust-marker"/);
+    assert.match(html, /x: markerLayout\.trust\.x - 6/);
+    assert.match(html, /y: markerLayout\.trust\.y - 7/);
+});
+
+test("automatic announcements ignore timestamps and report operational changes", () => {
+    const previous = fixtureState();
+    const timestampOnly = structuredClone(previous);
+    timestampOnly.generatedAt = "2026-09-25T23:00:00.000Z";
+    timestampOnly.nodes[0].updatedAt = "2026-09-25T23:00:00.000Z";
+    assert.equal(describeMeaningfulConstellationChange(previous, timestampOnly), "");
+    const refreshOnly = structuredClone(previous);
+    refreshOnly.diagnostics.refresh = {
+        ...refreshOnly.diagnostics.refresh,
+        status: "degraded",
+        usingLastGood: true,
+        consecutiveFailures: 1,
+    };
+    assert.equal(describeMeaningfulConstellationChange(previous, refreshOnly), "");
+
+    const changed = structuredClone(previous);
+    changed.nodes.find((node) => node.id === "busy-child").status = "completed";
+    changed.nodes.push({
+        id: "new-session",
+        name: "New session",
+        repository: "octo/new",
+        status: "idle",
+    });
+    assert.equal(
+        describeMeaningfulConstellationChange(previous, changed),
+        "1 session added. 1 session changed status."
+    );
 });
 
 test("pinch gesture zooms around the moving midpoint", () => {
@@ -941,6 +2641,7 @@ test("pinch gesture zooms around the moving midpoint", () => {
         currentA: { x: 10, y: 20 },
         currentB: { x: 210, y: 20 },
     });
+
     assert.deepEqual(zoomed, { x: 10, y: 20, k: 2 });
 
     const clamped = applyPinchGesture({
@@ -951,6 +2652,63 @@ test("pinch gesture zooms around the moving midpoint", () => {
         currentB: { x: 51, y: 0 },
     });
     assert.equal(clamped.k, 0.65);
+});
+
+test("programmatic scroll behavior honors normal and reduced motion modes", () => {
+    assert.equal(
+        programmaticScrollBehavior({
+            smooth: true,
+            reducedMotion: false,
+        }),
+        "smooth"
+    );
+    assert.equal(
+        programmaticScrollBehavior({
+            smooth: true,
+            reducedMotion: true,
+        }),
+        "auto"
+    );
+    assert.equal(
+        programmaticScrollBehavior({
+            smooth: false,
+            reducedMotion: false,
+        }),
+        "auto"
+    );
+});
+
+test("visible selection survives layout changes and falls back only when removed", () => {
+    const narrow = [
+        { id: "root" },
+        { id: "selected" },
+        { id: "current" },
+    ];
+    const wide = [
+        { id: "current" },
+        { id: "root" },
+        { id: "selected" },
+    ];
+    assert.equal(
+        resolveVisibleSelection(narrow, "selected", ["current", "root"]),
+        "selected"
+    );
+    assert.equal(
+        resolveVisibleSelection(wide, "selected", ["current", "root"]),
+        "selected"
+    );
+    assert.equal(
+        resolveVisibleSelection(
+            [{ id: "root" }, { id: "current" }],
+            "selected",
+            ["current", "root"]
+        ),
+        "current"
+    );
+    assert.equal(
+        resolveVisibleSelection([{ id: "root" }], "selected", ["current", "root"]),
+        "root"
+    );
 });
 
 test("collector uses app relationships and gracefully combines safe fallbacks", () => {
@@ -1149,8 +2907,34 @@ test("collector uses app relationships and gracefully combines safe fallbacks", 
         assert.equal(child.humanGate.label, "Plan approval required");
         assert.equal(child.pullRequest, "#42");
         assert.equal(child.issue, "#7");
+        assert.equal(result.diagnostics.sources.appDatabase.status, "healthy");
+        assert.equal(result.diagnostics.sources.sessionStore.status, "healthy");
+        assert.equal(result.diagnostics.sources.eventMetadata.status, "partial");
+        assert.deepEqual(result.diagnostics.coverage.events, {
+            observedSessions: 1,
+            selectedSessions: 2,
+        });
+        assert.equal(result.diagnostics.level, "limited");
+        assert.deepEqual(root.provenance.repository, {
+            kind: "recorded",
+            source: "appDatabase",
+        });
+        assert.deepEqual(root.provenance.model, {
+            kind: "recorded",
+            source: "appDatabase",
+        });
+        assert.deepEqual(root.provenance.status, {
+            kind: "inferred",
+            sources: ["appDatabase", "eventMetadata"],
+        });
+        assert.deepEqual(child.provenance.status, {
+            kind: "inferred",
+            sources: ["appDatabase"],
+        });
         assert.equal(JSON.stringify(result).includes("Safe title"), false);
         assert.equal(JSON.stringify(result).includes("Private child prompt"), false);
+        assert.equal(JSON.stringify(result).includes(appPath), false);
+        assert.equal(JSON.stringify(result).includes(storePath), false);
     } finally {
         app?.close();
         store?.close();
@@ -1275,6 +3059,96 @@ test("collector all scope labels home chat only from positive session metadata",
     }
 });
 
+test("refresh failure retains last-good state, publishes once, and recovers", async () => {
+    const initial = withRefreshHealth(fixtureState(), {
+        status: "healthy",
+        lastSuccessfulAt: "2026-09-25T18:00:00.000Z",
+    });
+    let fail = true;
+    const publications = [];
+    const entry = {
+        dataProvider: async () => {
+            if (fail) {
+                throw new Error(
+                    "private payload at D:\\Users\\person\\.copilot\\data.db"
+                );
+            }
+            return fixtureState();
+        },
+        scope: "tree",
+        projectScope: {
+            requested: "",
+            id: undefined,
+            name: undefined,
+            status: "none",
+        },
+        state: initial,
+        lastGoodState: initial,
+        refreshFailures: 0,
+        fingerprint: stateFingerprint(initial),
+        clients: new Set([
+            {
+                write(payload) {
+                    publications.push(payload);
+                },
+            },
+        ]),
+        refreshPromise: undefined,
+    };
+
+    await assert.rejects(refreshConstellationServer(entry), /private payload/);
+    assert.equal(entry.state.diagnostics.refresh.status, "degraded");
+    assert.equal(entry.state.diagnostics.refresh.usingLastGood, true);
+    assert.equal(entry.state.diagnostics.refresh.consecutiveFailures, 1);
+    assert.equal(
+        entry.state.diagnostics.refresh.lastSuccessfulAt,
+        "2026-09-25T18:00:00.000Z"
+    );
+    assert.deepEqual(
+        entry.state.nodes.map((node) => node.id),
+        initial.nodes.map((node) => node.id)
+    );
+    assert.equal(publications.length, 1);
+    assert.equal(JSON.stringify(entry.state).includes("private payload"), false);
+    assert.equal(JSON.stringify(entry.state).includes("data.db"), false);
+
+    await assert.rejects(refreshConstellationServer(entry), /private payload/);
+    assert.equal(entry.state.diagnostics.refresh.consecutiveFailures, 2);
+    assert.equal(publications.length, 1);
+
+    fail = false;
+    const recovered = await refreshConstellationServer(entry);
+    assert.equal(recovered.diagnostics.refresh.status, "healthy");
+    assert.equal(recovered.diagnostics.refresh.usingLastGood, false);
+    assert.equal(recovered.diagnostics.refresh.consecutiveFailures, 0);
+    assert.equal(publications.length, 2);
+});
+
+test("refresh health and diagnostic levels remain pure and sanitized", () => {
+    const initial = fixtureState();
+    const degraded = withRefreshHealth(initial, {
+        status: "degraded",
+        consecutiveFailures: 3,
+    });
+    assert.notEqual(degraded, initial);
+    assert.equal(diagnosticsLevel(degraded.diagnostics), "degraded");
+    assert.equal(initial.diagnostics.refresh.status, "healthy");
+    assert.deepEqual(
+        summarizeRelationshipCoverage(degraded.nodes, degraded.edges),
+        degraded.diagnostics.coverage.relationships
+    );
+});
+
+test("extension actions expose sanitized refresh failures", () => {
+    const source = readFileSync(path.join(extensionDir, "extension.mjs"), "utf8");
+    assert.match(source, /async function refreshForAction/);
+    assert.match(source, /"refresh_unavailable"/);
+    assert.match(source, /could not refresh sanitized local metadata/);
+    assert.match(source, /catch \{/);
+    assert.doesNotMatch(source, /error\.message/);
+    assert.doesNotMatch(source, /error\.stack/);
+});
+
 test("loopback server rejects unsafe requests and cleans up idempotently", async () => {
     const servers = new Map();
     const options = {
@@ -1304,6 +3178,12 @@ test("loopback server rejects unsafe requests and cleans up idempotently", async
         const layoutModule = await fetch(`${first.url}layout.mjs`, { headers: { cookie } });
         assert.equal(layoutModule.status, 200);
         assert.match(await layoutModule.text(), /layoutResponsiveConstellation/);
+
+        const attentionModule = await fetch(`${first.url}attention.mjs`, {
+            headers: { cookie },
+        });
+        assert.equal(attentionModule.status, 200);
+        assert.match(await attentionModule.text(), /buildAttentionQueue/);
 
         const stateResponse = await fetch(`${first.url}state`, { headers: { cookie } });
         assert.equal(stateResponse.status, 200);
@@ -1438,6 +3318,14 @@ test("simultaneous canvas instances keep scope and filters isolated across refre
         assert.equal(project.scope, "all");
         assert.equal(project.projectScope.id, "project-a");
         assert.equal(project.projectScope.status, "resolved");
+        assert.equal(
+            project.state.diagnostics.projectFilter.enforcement,
+            "server"
+        );
+        assert.equal(
+            project.state.diagnostics.visibility.projectFilter.enforcement,
+            "server"
+        );
         assert.equal(project.state.currentSessionId, undefined);
         assert.deepEqual(
             project.state.nodes
@@ -1599,27 +3487,321 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     assert.match(html, /current session/);
     assert.match(html, /id="inspectorClose"/);
     assert.match(html, /aria-label="Close session details"/);
+    assert.match(html, /id="trustToggle"/);
+    assert.match(html, /aria-controls="diagnostics"/);
+    assert.match(html, /aria-label="Trust and diagnostics"/);
+    assert.match(html, /aria-label="Close trust and diagnostics"/);
+    assert.match(html, /function renderDiagnostics/);
+    assert.match(html, /function presentationFingerprint/);
+    assert.match(
+        html,
+        /if \(!presentationChanged\) \{[\s\S]*if \(previousAttention !== nextAttentionFingerprint\) render\(\);[\s\S]*else renderAttention\(\);[\s\S]*renderDiagnostics\(\);[\s\S]*return;/
+    );
+    assert.match(html, /Query incompatible/);
+    assert.match(html, /last known sanitized state remains visible/i);
+    assert.match(
+        html,
+        /consecutiveFailures: Math\.max\(\s*1,\s*Number\(refresh\.consecutiveFailures \|\| 0\)\s*\)/
+    );
+    assert.match(html, /Synthetic edges do not assert provenance/);
+    assert.match(html, /Repository is an additive display filter/);
+    assert.match(html, /"Search and visibility"/);
+    assert.match(html, /"Compaction"/);
+    assert.match(html, /totalHiddenRealSessionCount/);
+    assert.match(html, /groupedHiddenSessionCount/);
+    assert.match(html, /repositoryGroupedHiddenSessionCount/);
+    assert.match(html, /overflowGroupedHiddenSessionCount/);
+    assert.match(html, /completedShelvedSessionCount/);
+    assert.match(html, /archivedShelvedSessionCount/);
+    assert.match(html, /Synthetic summaries are excluded/);
+    assert.match(
+        html,
+        /state\.layout\.hiddenSessionCount \+ " hidden"/
+    );
+    assert.match(html, /Sensitive content is not returned/);
     assert.match(html, /aria-hidden="true"/);
     assert.match(html, /function closeInspector/);
+    assert.match(html, /function closeDiagnostics/);
     assert.match(html, /function appendModelDetail/);
     assert.match(
         html,
         /node\.parentId\s*\?\s*"parent session outside this project; grouped for display"\s*:\s*"no recorded parent; grouped for display"/
     );
-    assert.match(html, /localLabel\.textContent = node\.demoLocalModel \? "Demo local model" : "Local model"/);
+    assert.match(html, /localLabel\.textContent = node\.demoLocalModel \? "Demo local runtime" : "Local runtime"/);
     assert.match(html, /"aria-label": "Runs locally"/);
     assert.match(html, /title\.textContent = "Runs locally"/);
     assert.match(html, /parts\.push\(node\.demoLocalModel \? "Demo local model" : "Local model"\)/);
     assert.match(html, /class: "node-model"/);
-    assert.match(html, /node\.isShelf\s*\?\s*""\s*:\s*formatModelLabel/);
+    assert.match(
+        html,
+        /node\.isShelf \|\| node\.isRepositoryGroup \|\| node\.isOverflowSummary\s*\?\s*""\s*:\s*formatModelLabel/
+    );
     assert.match(html, /node\.isLocalModel && !node\.isShelf/);
     assert.match(html, /--local-model:/);
     assert.match(html, /\.model-detail/);
-    assert.match(html, /\.demo-local-model/);
+    assert.match(html, /\.local-model-label/);
+    assert.match(html, /"LOCAL · " \+ modelLabel/);
     assert.match(html, /y: hasModelLabel \? -20 : -10/);
     assert.match(html, /state\.pointers = new Map|pointers: new Map/);
     assert.match(html, /applyPinchGesture/);
     assert.match(html, /completedExpanded/);
+    assert.match(html, /archivedExpanded/);
+    assert.match(
+        html,
+        /completedExpanded: config\.initialStatus === "completed"/
+    );
+    assert.match(
+        html,
+        /archivedExpanded: config\.initialStatus === "archived"/
+    );
+    assert.match(html, /function toggleShelf\(node\)/);
+    assert.match(html, /function toggleRepositoryGroup\(node\)/);
+    assert.match(html, /function toggleOverflowSummary\(node\)/);
+    assert.match(html, /"aria-expanded": node\.isOverflowSummary/);
     assert.match(html, /id="fitWidth"/);
+    assert.match(html, /id="attentionRadar"/);
+    assert.match(html, /id="attentionList"/);
+    assert.match(html, /Nothing needs attention right now\./);
+    assert.match(html, /buildAttentionQueue/);
+    assert.match(html, /function activateAttentionItem/);
+    assert.match(html, /resetLocalNavigationForAttention/);
+    assert.match(html, /state\.focusSessionId = ""/);
+    assert.match(html, /state\.selectedId = item\.id/);
+    assert.match(html, /state\.revealedIds\.add\(item\.id\)/);
+    assert.match(html, /Session revealed and details opened\./);
+    assert.match(html, /item\.shapeLabel \+ " status/);
+    assert.match(html, /data-attention-id/);
+    assert.match(html, /focus\(\{ preventScroll: true \}\)/);
+    assert.match(html, /focusNode\(item\.id, \{ smooth: true \}\)/);
+    assert.match(html, /programmaticScrollBehavior\(\{/);
+    assert.match(html, /openInspector\(sourceNode, false\)/);
+    assert.match(html, /closeDiagnostics\(\{ restoreFocus: false \}\)/);
+    assert.match(html, /Last meaningful activity/);
+    assert.match(html, /attentionItem\?\.kind === "inactive-busy"/);
     assert.doesNotMatch(html, />Fit</);
+});
+
+test("renderer restores attention focus with roving keyboard navigation", () => {
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+        scopeUrl: "http://127.0.0.1/scope",
+    });
+    assert.match(html, /id="attentionHeading"/);
+    assert.match(
+        html,
+        /button class="attention-overflow" id="attentionOverflow" type="button"/
+    );
+    assert.match(html, /resolveAttentionFocus\(\{/);
+    assert.match(html, /previousIds,/);
+    assert.match(html, /nextIds: queue\.targetIds/);
+    assert.match(html, /hasOverflow: queue\.overflowCount > 0/);
+    assert.match(html, /attentionRovingId: null/);
+    assert.match(
+        html,
+        /button\.tabIndex = item\.id === state\.attentionRovingId \? 0 : -1/
+    );
+    assert.match(html, /event\.key === "ArrowRight" \|\| event\.key === "ArrowDown"/);
+    assert.match(html, /event\.key === "ArrowLeft" \|\| event\.key === "ArrowUp"/);
+    assert.match(html, /event\.key === "Home"/);
+    assert.match(html, /event\.key === "End"/);
+    assert.match(html, /button\.addEventListener\("click", \(\) => activateAttentionItem\(item\)\)/);
+    assert.match(html, /focusResolution\.kind === "item"/);
+    assert.match(html, /focusResolution\.kind === "overflow"/);
+    assert.match(html, /focusResolution\.kind === "heading"/);
+    assert.match(html, /focusTarget\?\.focus\(\{ preventScroll: true \}\)/);
+    assert.match(html, /Attention queue updated\. Focus moved to/);
+    assert.match(html, /Attention queue is empty\. Focus moved to the Needs attention summary\./);
+    assert.match(html, /overflowFocused && queue\.overflowCount === 0/);
+    assert.match(html, /elements\.attentionHeading\.focus\(\{ preventScroll: true \}\)/);
+});
+
+test("renderer uses redundant status symbols in the legend, cards, and inspector", () => {
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+        scopeUrl: "http://127.0.0.1/scope",
+    });
+    assert.match(html, /function nodeStatusMarker\(status/);
+    assert.match(html, /class: "node-status-marker status-" \+ status/);
+    assert.match(html, /className = "status-glyph"/);
+    assert.match(html, /button\.setAttribute\("aria-pressed"/);
+    assert.match(html, /detail-status status-idle/);
+    for (const status of [
+        "busy",
+        "idle",
+        "completed",
+        "waiting-user",
+        "waiting-plan",
+        "blocked",
+        "failed",
+        "archived",
+    ]) {
+        assert.match(html, new RegExp(`status-${status}`));
+    }
+});
+
+test("renderer preserves SVG focus across refreshes and exposes explicit focus rings", () => {
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+        scopeUrl: "http://127.0.0.1/scope",
+    });
+    assert.match(html, /class: "node-focus-ring"/);
+    assert.match(html, /\.node:focus-visible \.node-focus-ring \{ opacity: 1; \}/);
+    assert.match(html, /document\.activeElement\?\.classList\?\.contains\("node"\)/);
+    assert.match(
+        html,
+        /focusedId &&\s*!focusNode\(focusedId, \{ reveal: false \}\)/
+    );
+    assert.match(html, /group\.focus\(\{ preventScroll: true \}\)/);
+    assert.match(html, /"aria-current": node\.isCurrent \? "true" : undefined/);
+    assert.match(html, /state\.selectedId = resolveVisibleSelection\(/);
+    assert.match(html, /function centerCurrent\(\{ smooth = true, resetZoom = true \} = \{\}\)/);
+    const centerStart = html.indexOf("function centerCurrent");
+    const centerEnd = html.indexOf("function fitReadableWidth", centerStart);
+    const centerBody = html.slice(centerStart, centerEnd);
+    assert.doesNotMatch(centerBody, /state\.selectedId|updateSelection/);
+    assert.match(
+        html,
+        /if \(previousOrientation !== state\.layout\.orientation\) \{\s*centerCurrent\(\{ smooth: false \}\);\s*\}/
+    );
+    assert.match(html, /if \(restoreFocus && state\.selectedId\) focusNode\(state\.selectedId\)/);
+});
+
+test("renderer combines search, focus, grouping, and keyboard reset accessibly", () => {
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+        scopeUrl: "http://127.0.0.1/scope",
+    });
+    assert.match(html, /id="searchFocus"/);
+    assert.match(html, /id="searchInput"/);
+    assert.match(html, /id="showAll"/);
+    assert.match(html, /id="focusSelected"/);
+    assert.match(html, /selectConstellationVisibility\(filtered/);
+    assert.match(html, /expandedGroupIds: new Set\(\)/);
+    assert.match(html, /expandedGroupIds: state\.expandedGroupIds/);
+    assert.match(html, /expandedOverflowIds: new Set\(\)/);
+    assert.match(html, /expandedOverflowIds: state\.expandedOverflowIds/);
+    assert.match(html, /revealedIds: new Set\(\)/);
+    assert.match(html, /revealedIds: state\.revealedIds/);
+    assert.match(html, /state\.revealedIds\.add\(nodeId\)/);
+    assert.match(
+        html,
+        /group = elements\.nodes\.querySelector\(\s*'\[data-id="' \+ CSS\.escape\(nodeId\) \+ '"\]'\s*\)/
+    );
+    assert.match(html, /repository group, " \+ node\.totalCount/);
+    assert.match(html, /Overflow page " \+ node\.overflowPage/);
+    assert.match(html, /"aria-expanded": node\.isOverflowSummary/);
+    assert.match(html, /visualParentId\(node\)/);
+    assert.match(html, /event\.key === "PageUp"/);
+    assert.match(html, /event\.key === "PageDown"/);
+    assert.match(
+        html,
+        /if \(event\.key === "Home"\) \{\s*event\.preventDefault\(\);\s*event\.stopPropagation\(\);/
+    );
+    assert.match(
+        html,
+        /if \(event\.key === "Home"\) \{\s*if \(event\.ctrlKey\) return;\s*event\.preventDefault\(\);\s*centerCurrent\(\);/
+    );
+    assert.doesNotMatch(html, /event\.key\.toLowerCase\(\) === "f"/);
+    assert.match(html, /isPlainSearchShortcut\(event\)/);
+    assert.doesNotMatch(html, /event\.key === "\/"/);
+    assert.match(html, /Lineage focus cleared\. Search and filters remain active\./);
+});
+
+test("renderer honors reduced motion and forced colors with correct badge contrast", () => {
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+        scopeUrl: "http://127.0.0.1/scope",
+    });
+    assert.match(html, /@media \(prefers-reduced-motion: reduce\)/);
+    assert.match(html, /animation-duration: \.001ms !important/);
+    assert.match(html, /\.edge\.working \{ stroke-dasharray: none; \}/);
+    assert.match(html, /\.node-halo \{ display: none; \}/);
+    assert.match(
+        html,
+        /const reducedMotionQuery = window\.matchMedia\("\(prefers-reduced-motion: reduce\)"\)/
+    );
+    assert.match(html, /function focusNode\(nodeId, \{ reveal = true, smooth = true \} = \{\}\)/);
+    assert.match(html, /group\.focus\(\{ preventScroll: true \}\)/);
+    assert.match(html, /group\.scrollIntoView\(\{/);
+    assert.match(
+        html,
+        /behavior: programmaticScrollBehavior\(\{\s*smooth,\s*reducedMotion: reducedMotionQuery\.matches\s*\}\)/
+    );
+    assert.doesNotMatch(html, /behavior: smooth \? "smooth" : "auto"/);
+    assert.match(html, /@media \(forced-colors: active\)/);
+    assert.match(html, /background: Canvas/);
+    assert.match(html, /stroke: Highlight/);
+    assert.match(html, /\.current-marker-text \{ fill: HighlightText; \}/);
+    assert.match(html, /forced-color-adjust: none/);
+});
+
+test("renderer keeps chrome, filters, status context, and inspector usable when narrow", () => {
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+        scopeUrl: "http://127.0.0.1/scope",
+    });
+    assert.match(html, /min-width: 280px/);
+    assert.match(html, /@media \(max-width: 720px\)/);
+    assert.match(html, /@media \(max-width: 520px\)/);
+    assert.match(html, /@media \(max-width: 360px\)/);
+    assert.match(html, /grid-template-columns: minmax\(0, 1fr\) auto/);
+    assert.match(html, /\.status-strip[\s\S]*overflow-x: auto/);
+    assert.match(html, /\.attention-panel[\s\S]*max-height: 176px/);
+    assert.match(html, /\.attention-list[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+    assert.match(html, /window\.matchMedia\("\(max-width: 480px\)"\)\.matches/);
+    assert.match(html, /elements\.attentionRadar\.open = false/);
+    assert.match(html, /\.attention-radar\[open\] \.attention-caret/);
+    assert.match(
+        html,
+        /\.inspector, \.diagnostics \{ max-height: min\(48vh, 320px\); \}/
+    );
+    assert.match(
+        html,
+        /\.inspector-head, \.diagnostics-head[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto/
+    );
+    assert.match(html, /\.diagnostic-grid \{ grid-template-columns: 1fr/);
+    assert.match(html, /\.source-description \{ grid-column: 1 \/ -1; \}/);
+    assert.match(
+        html,
+        /\.trust-control:not\(\.limited\):not\(\.degraded\):not\(\.demo\) #trustLabel/
+    );
+    assert.match(html, /width: Math\.max\(280, rect\.width\)/);
+});
+
+test("renderer uses the documented canvas theme contract and meaningful updates only", () => {
+    const html = renderConstellationHtml({
+        stateUrl: "http://127.0.0.1/state",
+        eventsUrl: "http://127.0.0.1/events",
+        refreshUrl: "http://127.0.0.1/refresh",
+        scopeUrl: "http://127.0.0.1/scope",
+    });
+    for (const token of [
+        "--background-color-default",
+        "--border-color-default",
+        "--text-color-default",
+        "--text-color-muted",
+        "--color-focus-outline",
+        "--color-white",
+        "--true-color-blue",
+        "--true-color-blue-muted",
+        "--true-color-red",
+        "--font-sans",
+        "--font-mono",
+    ]) {
+        assert.match(html, new RegExp(token));
+    }
+    assert.match(html, /describeMeaningfulConstellationChange\(state\.data, next\)/);
+    assert.match(html, /if \(announcement\) elements\.live\.textContent = announcement/);
 });

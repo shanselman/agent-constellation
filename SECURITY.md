@@ -9,3 +9,5 @@ Include the affected version, reproduction steps, expected impact, and the small
 ## Security boundaries
 
 Agent Constellation reads local Copilot metadata and serves a local canvas. Changes must preserve read-only database access, bounded event reads, metadata sanitization, loopback-only binding, per-canvas authentication, same-site request checks, a restrictive Content Security Policy, and zero runtime network dependencies.
+
+Diagnostics and action failures must remain sanitized. Do not return raw exceptions, stack traces, database or filesystem paths, event payloads, prompts, messages, secrets, tool arguments, or repository file contents; report only stable capability and health categories.
