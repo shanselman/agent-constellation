@@ -143,6 +143,8 @@ opens the cross-project overview, such as from My Copilot home. A project-scoped
 { "scope": "all", "project": "agent-constellation", "repository": "shanselman/agent-constellation" }
 ```
 
+Project identifiers and names resolve case-insensitively. When a stable project ID is available, the canvas keeps that ID for later refreshes so a friendly-name change does not broaden the view. Unknown, deleted, or ambiguous project names fail closed to an empty scoped state; they never reset to **All projects**. The same resolver is used by the open input, in-canvas project selector, refresh/SSE state, and the `get_state` action's additive `project` filter.
+
 The extension does not infer a new default from where it happens to be opened; callers should provide explicit scope and project/repository context when available.
 
 For an explicit local-model UI demonstration:

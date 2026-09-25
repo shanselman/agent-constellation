@@ -415,9 +415,11 @@ export function renderConstellationHtml(config) {
   <script type="module">
     import {
       applyPinchGesture,
+      filterConstellationView,
       fitWidthScale,
       formatModelLabel,
-      layoutResponsiveConstellation
+      layoutResponsiveConstellation,
+      resolveProjectFilter
     } from "./layout.mjs";
 
     const config = ${serializedConfig};
@@ -511,40 +513,11 @@ export function renderConstellationHtml(config) {
 
     function filteredState() {
       if (!state.data) return null;
-      if (!state.status && !state.repository && !state.project) return state.data;
-      const keep = new Set(
-        state.data.nodes.filter((node) => {
-          if (node.synthetic) return false;
-          const statusMatch = !state.status || node.status === state.status;
-          const repoMatch = !state.repository || node.repository === state.repository;
-          const projectMatch = !state.project ||
-            node.projectId === state.project ||
-            node.projectName === state.project;
-          return statusMatch && repoMatch && projectMatch;
-        }).map((node) => node.id)
-      );
-      keep.add(state.data.rootId);
-      if (state.data.diagnostics?.effectiveScope !== "all") {
-        keep.add(state.data.currentSessionId);
-      }
-      let changed = true;
-      while (changed) {
-        changed = false;
-        state.data.nodes.forEach((node) => {
-          const parentId = node.syntheticParentId || node.parentId;
-          if (keep.has(node.id) && parentId && !keep.has(parentId)) {
-            keep.add(parentId);
-            changed = true;
-          }
-        });
-      }
-      const nodes = state.data.nodes.filter((node) => keep.has(node.id));
-      const ids = new Set(nodes.map((node) => node.id));
-      return {
-        ...state.data,
-        nodes,
-        edges: state.data.edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target))
-      };
+      return filterConstellationView(state.data, {
+        status: state.status,
+        repository: state.repository,
+        project: state.project
+      });
     }
 
     function stageSize() {
@@ -731,11 +704,31 @@ export function renderConstellationHtml(config) {
       elements.projectFilter.replaceChildren(new Option("All projects", ""));
       (state.data.projects || []).forEach((project) => {
         const value = project.id || project.name;
-        elements.projectFilter.add(new Option(project.name, value));
+        const duplicateName = (state.data.projects || []).filter(
+          (candidate) => candidate.name.toLowerCase() === project.name.toLowerCase()
+        ).length > 1;
+        const label = duplicateName && project.id
+          ? project.name + " (" + project.id.slice(0, 8) + ")"
+          : project.name;
+        elements.projectFilter.add(new Option(label, value));
       });
-      const values = [...elements.projectFilter.options].map((option) => option.value);
-      elements.projectFilter.value = values.includes(current) ? current : "";
-      state.project = elements.projectFilter.value;
+      const resolution = resolveProjectFilter(state.data.projects, current);
+      if (!current) {
+        elements.projectFilter.value = "";
+        state.project = "";
+      } else if (resolution.matched) {
+        elements.projectFilter.value = resolution.value;
+        state.project = resolution.value;
+      } else {
+        const filterStatus =
+          state.data.diagnostics?.projectFilter?.status || resolution.status;
+        const label = filterStatus === "ambiguous"
+          ? "Ambiguous project filter"
+          : "Project unavailable";
+        elements.projectFilter.add(new Option(label, current));
+        elements.projectFilter.value = current;
+        state.project = current;
+      }
     }
 
     function edgePath(edge, byId) {
@@ -771,11 +764,7 @@ export function renderConstellationHtml(config) {
             (target?.status === "waiting-user" || target?.status === "waiting-plan" ? " attention" : "") +
             (edge.isShelf ? " shelf" : "") +
             (edge.kind === "containment" ? " containment" : ""),
-          "aria-hidden": edge.kind === "containment" ? "false" : "true",
-          role: edge.kind === "containment" ? "img" : undefined,
-          "aria-label": edge.kind === "containment"
-            ? "Synthetic grouping connection; not parent-child lineage"
-            : undefined
+          "aria-hidden": "true"
         });
         elements.edges.appendChild(path);
       });

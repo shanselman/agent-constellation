@@ -41,6 +41,219 @@ function clamp(value, minimum, maximum) {
     return Math.max(minimum, Math.min(maximum, value));
 }
 
+function normalizedFilterValue(value) {
+    return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+export function resolveProjectFilter(projects, input) {
+    const requested = typeof input === "string" ? input.trim() : "";
+    if (!requested) {
+        return {
+            requested: "",
+            status: "none",
+            matched: true,
+            id: undefined,
+            name: undefined,
+            value: "",
+        };
+    }
+    const lookup = normalizedFilterValue(requested);
+    const available = Array.isArray(projects) ? projects : [];
+    const idMatches = available.filter(
+        (project) => normalizedFilterValue(project?.id) === lookup
+    );
+    if (idMatches.length === 1) {
+        const project = idMatches[0];
+        return {
+            requested,
+            status: "resolved",
+            matched: true,
+            id: project.id || undefined,
+            name: project.name || undefined,
+            value: project.id || project.name,
+        };
+    }
+    if (idMatches.length > 1) {
+        return {
+            requested,
+            status: "ambiguous",
+            matched: false,
+            id: undefined,
+            name: undefined,
+            value: requested,
+        };
+    }
+    const nameMatches = available.filter(
+        (project) => normalizedFilterValue(project?.name) === lookup
+    );
+    if (nameMatches.length === 1) {
+        const project = nameMatches[0];
+        return {
+            requested,
+            status: "resolved",
+            matched: true,
+            id: project.id || undefined,
+            name: project.name || undefined,
+            value: project.id || project.name,
+        };
+    }
+    return {
+        requested,
+        status: nameMatches.length > 1 ? "ambiguous" : "unknown",
+        matched: false,
+        id: undefined,
+        name: undefined,
+        value: requested,
+    };
+}
+
+export function matchesProjectFilter(project, resolution) {
+    if (!resolution?.requested) return true;
+    if (!resolution.matched) return false;
+    const id = normalizedFilterValue(project?.projectId ?? project?.id);
+    const name = normalizedFilterValue(project?.projectName ?? project?.name);
+    if (resolution.id) return id === normalizedFilterValue(resolution.id);
+    return Boolean(
+        resolution.name && name === normalizedFilterValue(resolution.name)
+    );
+}
+
+function visualParentId(node) {
+    return node?.syntheticParentId || node?.parentId;
+}
+
+function filteredCounts(nodes, statuses) {
+    const counts = Object.fromEntries(statuses.map((status) => [status, 0]));
+    for (const node of nodes) {
+        if (!node.synthetic && Object.hasOwn(counts, node.status)) counts[node.status]++;
+    }
+    return counts;
+}
+
+function filteredProjects(nodes) {
+    return [
+        ...new Map(
+            nodes
+                .filter((node) => !node.synthetic)
+                .map((node) => [
+                    `${node.projectId ?? ""}\u0000${node.projectName ?? ""}`,
+                    {
+                        id: node.projectId,
+                        name: node.projectName,
+                    },
+                ])
+        ).values(),
+    ].sort((left, right) => String(left.name).localeCompare(String(right.name)));
+}
+
+export function filterConstellationView(
+    state,
+    { status = "", repository = "", project = "" } = {}
+) {
+    if (!state || !Array.isArray(state.nodes) || !Array.isArray(state.edges)) return state;
+    const normalizedStatus = typeof status === "string" ? status.trim() : "";
+    const normalizedRepository = normalizedFilterValue(repository);
+    const projectResolution = resolveProjectFilter(state.projects, project);
+    if (!normalizedStatus && !normalizedRepository && !projectResolution.requested) return state;
+
+    const realMatches = state.nodes.filter(
+        (node) =>
+            !node.synthetic &&
+            (!normalizedStatus || node.status === normalizedStatus) &&
+            (!normalizedRepository ||
+                normalizedFilterValue(node.repository) === normalizedRepository) &&
+            matchesProjectFilter(node, projectResolution)
+    );
+    const projectFilter = projectResolution.requested
+        ? {
+              requested: projectResolution.requested,
+              status: projectResolution.status,
+              effectiveProjectId: projectResolution.id,
+              effectiveProjectName: projectResolution.name,
+          }
+        : undefined;
+    if (!realMatches.length) {
+        return {
+            ...state,
+            nodes: [],
+            edges: [],
+            counts: filteredCounts([], Object.keys(state.counts ?? {})),
+            repositories: [],
+            projects: [],
+            diagnostics: {
+                ...state.diagnostics,
+                selectedRealSessionCount: 0,
+                projectFilter,
+            },
+        };
+    }
+
+    const byId = new Map(state.nodes.map((node) => [node.id, node]));
+    const keep = new Set(realMatches.map((node) => node.id));
+    if (projectResolution.requested) {
+        if (byId.get(state.rootId)?.synthetic) keep.add(state.rootId);
+        let changed = true;
+        while (changed) {
+            changed = false;
+            for (const id of [...keep]) {
+                const node = byId.get(id);
+                const parentId = visualParentId(node);
+                const parent = parentId ? byId.get(parentId) : undefined;
+                if (
+                    parent &&
+                    !keep.has(parent.id) &&
+                    (parent.synthetic || matchesProjectFilter(parent, projectResolution))
+                ) {
+                    keep.add(parent.id);
+                    changed = true;
+                }
+            }
+        }
+    } else {
+        keep.add(state.rootId);
+        if (state.diagnostics?.effectiveScope !== "all") {
+            keep.add(state.currentSessionId);
+        }
+        let changed = true;
+        while (changed) {
+            changed = false;
+            for (const id of [...keep]) {
+                const parentId = visualParentId(byId.get(id));
+                if (parentId && byId.has(parentId) && !keep.has(parentId)) {
+                    keep.add(parentId);
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    const nodes = state.nodes.filter((node) => keep.has(node.id));
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    const rootId = nodeIds.has(state.rootId)
+        ? state.rootId
+        : nodes.find((node) => {
+              const parentId = visualParentId(node);
+              return !parentId || !nodeIds.has(parentId);
+          })?.id;
+    const realNodes = nodes.filter((node) => !node.synthetic);
+    return {
+        ...state,
+        rootId,
+        nodes,
+        edges: state.edges.filter(
+            (edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)
+        ),
+        counts: filteredCounts(realNodes, Object.keys(state.counts ?? {})),
+        repositories: [...new Set(realNodes.map((node) => node.repository))].sort(),
+        projects: filteredProjects(realNodes),
+        diagnostics: {
+            ...state.diagnostics,
+            selectedRealSessionCount: realNodes.length,
+            projectFilter,
+        },
+    };
+}
+
 function humanizeIdentifier(value) {
     if (typeof value !== "string") return "";
     const tokens = value
@@ -85,10 +298,6 @@ function compareNodes(left, right) {
         String(left.name ?? "").localeCompare(String(right.name ?? "")) ||
         String(left.id).localeCompare(String(right.id))
     );
-}
-
-function visualParentId(node) {
-    return node?.syntheticParentId || node?.parentId;
 }
 
 function ancestry(nodeId, byId) {

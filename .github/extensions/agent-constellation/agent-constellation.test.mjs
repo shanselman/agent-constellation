@@ -7,6 +7,7 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import {
     CANVAS_OPEN_INPUT_SCHEMA,
+    FILTER_PROPERTIES,
     collectConstellationState,
     decorateConstellationForDemo,
     filterConstellationState,
@@ -19,10 +20,12 @@ import {
 import {
     applyPinchGesture,
     completedShelfId,
+    filterConstellationView,
     fitWidthScale,
     formatModelLabel,
     layoutResponsiveConstellation,
     orientationForSize,
+    resolveProjectFilter,
 } from "./layout.mjs";
 import { renderConstellationHtml } from "./renderer.mjs";
 import {
@@ -127,6 +130,60 @@ function fixtureState(scope = "tree") {
             scope,
         }
     );
+}
+
+function multiProjectFixtureState(
+    scope = "all",
+    { projectAName = "Project A", includeProjectA = true, duplicateProjectAName = false } = {}
+) {
+    const nodes = [
+        {
+            id: "home",
+            name: "Home chat",
+            projectName: "My Copilot",
+            repository: "No project",
+            sessionType: "general_chat",
+            isHomeChat: true,
+            status: "idle",
+        },
+        {
+            id: "project-b-root",
+            name: "Project B root",
+            projectId: "project-b",
+            projectName: duplicateProjectAName ? projectAName : "Project B",
+            repository: "octo/b",
+            status: "completed",
+        },
+    ];
+    if (includeProjectA) {
+        nodes.push(
+            {
+                id: "project-a-root",
+                name: "Project A root",
+                projectId: "project-a",
+                projectName: projectAName,
+                repository: "octo/a",
+                status: "busy",
+            },
+            {
+                id: "project-a-child",
+                parentId: "project-a-root",
+                name: "Project A child",
+                projectId: "project-a",
+                projectName: projectAName,
+                repository: "octo/a",
+                status: "waiting-user",
+            }
+        );
+    }
+    return normalizeConstellation(nodes, "home", {
+        appDatabase: true,
+        sessionStore: true,
+        eventMetadata: true,
+        relationships: true,
+        projects: true,
+        scope,
+    });
 }
 
 test("normalization sanitizes metadata and layout is deterministic", () => {
@@ -273,6 +330,7 @@ test("canvas open schema adds contextual scope and project inputs", () => {
         enum: ["tree", "all"],
     });
     assert.equal(CANVAS_OPEN_INPUT_SCHEMA.properties.project.type, "string");
+    assert.equal(FILTER_PROPERTIES.project.type, "string");
     assert.equal(CANVAS_OPEN_INPUT_SCHEMA.additionalProperties, false);
 });
 
@@ -385,10 +443,8 @@ test("current grandchild resolves topmost root and includes sibling descendants"
     assert.equal(filtered.currentSessionId, "current-grandchild");
 
     const noMatches = filterConstellationState(first, { status: "failed" });
-    assert.deepEqual(
-        noMatches.nodes.map((node) => node.id).sort(),
-        ["current-grandchild", "current-parent", "root"]
-    );
+    assert.deepEqual(noMatches.nodes, []);
+    assert.deepEqual(noMatches.edges, []);
 });
 
 test("all scope preserves real lineage and groups independent roots synthetically", () => {
@@ -505,6 +561,64 @@ test("all scope preserves real lineage and groups independent roots syntheticall
     assert.equal(
         all.nodes.find((node) => node.id === "standalone-cli").name.startsWith("Home chat"),
         false
+    );
+});
+
+test("project filters resolve IDs and names case-insensitively and fail closed", () => {
+    const state = multiProjectFixtureState();
+    const byId = filterConstellationState(state, { project: "project-a" });
+    const byName = filterConstellationState(state, { project: "Project A" });
+    const byCaseInsensitiveName = filterConstellationView(state, {
+        project: "pRoJeCt A",
+    });
+    for (const filtered of [byId, byName, byCaseInsensitiveName]) {
+        assert.deepEqual(
+            filtered.nodes.filter((node) => !node.synthetic).map((node) => node.id).sort(),
+            ["project-a-child", "project-a-root"]
+        );
+        assert.equal(filtered.diagnostics.selectedRealSessionCount, 2);
+        assert.equal(filtered.diagnostics.projectFilter.status, "resolved");
+        assert.equal(
+            filtered.diagnostics.projectFilter.effectiveProjectId,
+            "project-a"
+        );
+    }
+
+    const unknown = filterConstellationState(state, {
+        project: "deleted-project",
+    });
+    assert.deepEqual(unknown.nodes, []);
+    assert.deepEqual(unknown.edges, []);
+    assert.equal(unknown.diagnostics.selectedRealSessionCount, 0);
+    assert.equal(unknown.diagnostics.projectFilter.status, "unknown");
+
+    const ambiguousState = multiProjectFixtureState("all", {
+        duplicateProjectAName: true,
+    });
+    const ambiguous = filterConstellationState(ambiguousState, {
+        project: "Project A",
+    });
+    assert.deepEqual(ambiguous.nodes, []);
+    assert.equal(ambiguous.diagnostics.projectFilter.status, "ambiguous");
+    const explicitId = filterConstellationState(ambiguousState, {
+        project: "project-b",
+    });
+    assert.deepEqual(
+        explicitId.nodes.filter((node) => !node.synthetic).map((node) => node.id),
+        ["project-b-root"]
+    );
+
+    assert.deepEqual(resolveProjectFilter(state.projects, "PROJECT-A"), {
+        requested: "PROJECT-A",
+        status: "resolved",
+        matched: true,
+        id: "project-a",
+        name: "Project A",
+        value: "project-a",
+    });
+    assert.equal(
+        resolveProjectFilter(ambiguousState.projects, "project a").status,
+        "ambiguous"
     );
 });
 
@@ -1064,7 +1178,10 @@ test("loopback server rejects unsafe requests and cleans up idempotently", async
 
 test("simultaneous canvas instances keep scope and filters isolated across refresh and reload", async () => {
     const servers = new Map();
-    const provider = async ({ scope } = {}) => fixtureState(scope);
+    let projectAName = "Project A";
+    let includeProjectA = true;
+    const provider = async ({ scope } = {}) =>
+        multiProjectFixtureState(scope, { projectAName, includeProjectA });
     const homeOptions = {
         dataProvider: provider,
         initialScope: "all",
@@ -1073,8 +1190,14 @@ test("simultaneous canvas instances keep scope and filters isolated across refre
     const projectOptions = {
         dataProvider: provider,
         initialScope: "all",
-        initialProject: "project-a",
+        initialProject: "pRoJeCt A",
         initialRepository: "octo/a",
+        pollIntervalMs: 60_000,
+    };
+    const unknownProjectOptions = {
+        dataProvider: provider,
+        initialScope: "all",
+        initialProject: "deleted-project",
         pollIntervalMs: 60_000,
     };
     const treeOptions = {
@@ -1082,22 +1205,49 @@ test("simultaneous canvas instances keep scope and filters isolated across refre
         pollIntervalMs: 60_000,
     };
     try {
-        const [home, project, tree] = await Promise.all([
+        const [home, project, unknownProject, tree] = await Promise.all([
             getOrCreateConstellationServer(servers, "home-view", homeOptions),
             getOrCreateConstellationServer(servers, "project-view", projectOptions),
+            getOrCreateConstellationServer(
+                servers,
+                "unknown-project-view",
+                unknownProjectOptions
+            ),
             getOrCreateConstellationServer(servers, "tree-view", treeOptions),
         ]);
         assert.equal(home.scope, "all");
         assert.equal(project.scope, "all");
+        assert.equal(project.projectScope.id, "project-a");
+        assert.equal(project.projectScope.status, "resolved");
+        assert.deepEqual(
+            project.state.nodes
+                .filter((node) => !node.synthetic)
+                .map((node) => node.id)
+                .sort(),
+            ["project-a-child", "project-a-root"]
+        );
+        assert.equal(
+            project.state.nodes.some((node) => node.id === "project-b-root"),
+            false
+        );
+        assert.equal(unknownProject.state.nodes.length, 0);
+        assert.equal(unknownProject.projectScope.status, "unknown");
         assert.equal(tree.scope, "tree");
 
-        const reopened = await getOrCreateConstellationServer(
+        const reopenedHome = await getOrCreateConstellationServer(
             servers,
             "home-view",
             { ...homeOptions, initialScope: "tree" }
         );
-        assert.equal(reopened, home);
-        assert.equal(reopened.scope, "all");
+        const reopenedProject = await getOrCreateConstellationServer(
+            servers,
+            "project-view",
+            { ...projectOptions, initialProject: "" }
+        );
+        assert.equal(reopenedHome, home);
+        assert.equal(reopenedHome.scope, "all");
+        assert.equal(reopenedProject, project);
+        assert.equal(reopenedProject.projectScope.id, "project-a");
 
         const homeBootstrap = await fetch(home.openUrl, { redirect: "manual" });
         const homeCookie = homeBootstrap.headers.get("set-cookie").split(";")[0];
@@ -1108,14 +1258,35 @@ test("simultaneous canvas instances keep scope and filters isolated across refre
         });
         assert.equal(changed.status, 200);
         assert.equal(home.scope, "tree");
+        projectAName = "Project A Renamed";
         await Promise.all([
             refreshConstellationServer(project),
+            refreshConstellationServer(unknownProject),
             refreshConstellationServer(tree),
         ]);
         assert.equal(project.scope, "all");
         assert.equal(project.state.diagnostics.effectiveScope, "all");
+        assert.equal(project.projectScope.id, "project-a");
+        assert.equal(project.projectScope.name, "Project A Renamed");
+        assert.equal(project.state.diagnostics.selectedRealSessionCount, 2);
+        assert.equal(unknownProject.state.nodes.length, 0);
         assert.equal(tree.scope, "tree");
         assert.equal(tree.state.diagnostics.effectiveScope, "tree");
+
+        includeProjectA = false;
+        await refreshConstellationServer(project);
+        assert.equal(project.state.nodes.length, 0);
+        assert.equal(project.projectScope.id, "project-a");
+        assert.equal(project.projectScope.status, "unknown");
+
+        includeProjectA = true;
+        await refreshConstellationServer(project);
+        assert.equal(project.state.diagnostics.selectedRealSessionCount, 2);
+        assert.equal(project.projectScope.id, "project-a");
+        assert.equal(
+            project.state.nodes.some((node) => node.id === "project-b-root"),
+            false
+        );
 
         const projectBootstrap = await fetch(project.openUrl, { redirect: "manual" });
         const projectCookie = projectBootstrap.headers.get("set-cookie").split(";")[0];
@@ -1129,24 +1300,37 @@ test("simultaneous canvas instances keep scope and filters isolated across refre
         await Promise.all([
             closeConstellationServer(servers, "home-view"),
             closeConstellationServer(servers, "project-view"),
+            closeConstellationServer(servers, "unknown-project-view"),
             closeConstellationServer(servers, "tree-view"),
         ]);
     }
 
+    projectAName = "Project A";
+    includeProjectA = true;
     const reloadedServers = new Map();
     try {
-        const [homeReloaded, projectReloaded, treeReloaded] = await Promise.all([
+        const [homeReloaded, projectReloaded, unknownReloaded, treeReloaded] =
+            await Promise.all([
             getOrCreateConstellationServer(reloadedServers, "home-view", homeOptions),
             getOrCreateConstellationServer(reloadedServers, "project-view", projectOptions),
+            getOrCreateConstellationServer(
+                reloadedServers,
+                "unknown-project-view",
+                unknownProjectOptions
+            ),
             getOrCreateConstellationServer(reloadedServers, "tree-view", treeOptions),
         ]);
         assert.equal(homeReloaded.scope, "all");
         assert.equal(projectReloaded.scope, "all");
+        assert.equal(projectReloaded.projectScope.id, "project-a");
+        assert.equal(projectReloaded.state.diagnostics.selectedRealSessionCount, 2);
+        assert.equal(unknownReloaded.state.nodes.length, 0);
         assert.equal(treeReloaded.scope, "tree");
     } finally {
         await Promise.all([
             closeConstellationServer(reloadedServers, "home-view"),
             closeConstellationServer(reloadedServers, "project-view"),
+            closeConstellationServer(reloadedServers, "unknown-project-view"),
             closeConstellationServer(reloadedServers, "tree-view"),
         ]);
     }
@@ -1165,8 +1349,12 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     assert.match(html, /id="scopeSelect"/);
     assert.match(html, />All sessions</);
     assert.match(html, /id="projectFilter"/);
-    assert.match(html, /Synthetic grouping connection; not parent-child lineage/);
     assert.match(html, /synthetic grouping container, not a session or parent-child relationship/);
+    assert.match(html, /filterConstellationView/);
+    assert.match(html, /resolveProjectFilter/);
+    assert.match(html, /"aria-hidden": "true"/);
+    assert.match(html, /Ambiguous project filter/);
+    assert.match(html, /Project unavailable/);
     assert.match(html, /async function switchScope/);
     assert.match(html, /scope change failed/i);
     assert.match(html, /Mission status counts/);

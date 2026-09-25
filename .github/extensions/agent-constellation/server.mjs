@@ -1,7 +1,12 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { sanitizeText, stateFingerprint } from "./data.mjs";
+import {
+    filterConstellationState,
+    sanitizeText,
+    stateFingerprint,
+} from "./data.mjs";
+import { resolveProjectFilter } from "./layout.mjs";
 import { renderConstellationHtml } from "./renderer.mjs";
 
 const layoutModule = readFileSync(new URL("./layout.mjs", import.meta.url), "utf8");
@@ -111,11 +116,26 @@ function publishState(entry) {
     }
 }
 
+function applyProjectScope(state, projectScope) {
+    if (!projectScope.requested) return state;
+    const lookup = projectScope.id || projectScope.requested;
+    const resolution = resolveProjectFilter(state.projects, lookup);
+    if (!projectScope.id && resolution.matched && resolution.id) {
+        projectScope.id = resolution.id;
+    }
+    projectScope.status = resolution.status;
+    projectScope.name = resolution.name;
+    return filterConstellationState(state, {
+        project: projectScope.id || projectScope.requested,
+    });
+}
+
 export async function refreshConstellationServer(entryOrPromise, { publish = true } = {}) {
     const entry = await entryOrPromise;
     if (!entry) throw new Error("Canvas server is not open");
     if (entry.refreshPromise) return entry.refreshPromise;
     entry.refreshPromise = Promise.resolve(entry.dataProvider({ scope: entry.scope }))
+        .then((next) => applyProjectScope(next, entry.projectScope))
         .then((next) => {
             const fingerprint = stateFingerprint(next);
             const changed = fingerprint !== entry.fingerprint;
@@ -152,7 +172,16 @@ export async function startConstellationServer({
 } = {}) {
     if (typeof dataProvider !== "function") throw new Error("A data provider is required");
     const scope = initialScope === "all" ? "all" : "tree";
-    const initialState = await dataProvider({ scope });
+    const projectScope = {
+        requested: sanitizeText(initialProject, 180),
+        id: undefined,
+        name: undefined,
+        status: "none",
+    };
+    const initialState = applyProjectScope(
+        await dataProvider({ scope }),
+        projectScope
+    );
     const entry = {
         server: undefined,
         url: "",
@@ -165,6 +194,7 @@ export async function startConstellationServer({
         refreshPromise: undefined,
         dataProvider,
         scope,
+        projectScope,
         state: initialState,
         fingerprint: stateFingerprint(initialState),
     };
@@ -195,7 +225,8 @@ export async function startConstellationServer({
                     refreshUrl: `${entry.url}refresh`,
                     scopeUrl: `${entry.url}scope`,
                     initialRepository: sanitizeText(initialRepository, 180),
-                    initialProject: sanitizeText(initialProject, 180),
+                    initialProject:
+                        entry.projectScope.id || entry.projectScope.requested,
                     initialStatus: sanitizeText(initialStatus, 30),
                     initialScope: entry.scope,
                 });

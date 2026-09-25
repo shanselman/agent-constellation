@@ -1,6 +1,7 @@
 import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { filterConstellationView } from "./layout.mjs";
 
 export const STATUSES = [
     "busy",
@@ -16,13 +17,13 @@ export const STATUSES = [
 export const FILTER_PROPERTIES = {
     status: { type: "string", enum: STATUSES },
     repository: { type: "string", minLength: 1, maxLength: 180 },
+    project: { type: "string", minLength: 1, maxLength: 180 },
 };
 
 export const CANVAS_OPEN_INPUT_SCHEMA = {
     type: "object",
     properties: {
         ...FILTER_PROPERTIES,
-        project: { type: "string", minLength: 1, maxLength: 180 },
         scope: { type: "string", enum: ["tree", "all"] },
         demoLocalModel: { type: "boolean" },
     },
@@ -789,41 +790,8 @@ export function decorateConstellationForDemo(state) {
 export function filterConstellationState(state, input = {}) {
     const status = STATUSES.includes(input?.status) ? input.status : undefined;
     const repository = sanitizeText(input?.repository, 180);
-    const project = sanitizeText(input?.project, 180).toLowerCase();
-    if (!status && !repository && !project) return state;
-    const keep = new Set(
-        state.nodes
-            .filter(
-                (node) =>
-                    !node.synthetic &&
-                    (!status || node.status === status) &&
-                    (!repository || node.repository.toLowerCase() === repository.toLowerCase()) &&
-                    (!project ||
-                        node.projectId?.toLowerCase() === project ||
-                        node.projectName.toLowerCase() === project)
-            )
-            .map((node) => node.id)
-    );
-    keep.add(state.rootId);
-    if (state.diagnostics?.effectiveScope !== "all") keep.add(state.currentSessionId);
-    let changed = true;
-    while (changed) {
-        changed = false;
-        for (const node of state.nodes) {
-            const parentId = visualParentId(node);
-            if (keep.has(node.id) && parentId && !keep.has(parentId)) {
-                keep.add(parentId);
-                changed = true;
-            }
-        }
-    }
-    const nodes = state.nodes.filter((node) => keep.has(node.id));
-    const nodeIds = new Set(nodes.map((node) => node.id));
-    return {
-        ...state,
-        nodes,
-        edges: state.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)),
-    };
+    const project = sanitizeText(input?.project, 180);
+    return filterConstellationView(state, { status, repository, project });
 }
 
 export function stateFingerprint(state) {
