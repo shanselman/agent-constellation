@@ -39,6 +39,24 @@ Statuses include:
 
 Completed descendants collapse into a **Completed shelf** so a large constellation remains readable. Expand the shelf when you need to inspect finished work.
 
+### Operational mission briefing
+
+A collapsible briefing above the constellation summarizes the visible sanitized local state in a fixed order:
+
+- Active work
+- Decisions needed
+- Failures
+- Blocked sessions
+- Timestamped completions from the last 24 hours
+- Repository spread
+- Possible bottleneck signals
+
+The briefing is deterministic and local. It does not call an LLM or network service, and it never reads prompts, message text, tool arguments, or repository file contents. Every statement comes from the same already-sanitized session metadata used by the constellation.
+
+Bottleneck entries are deliberately phrased as **signals, not diagnoses**. The current fixed thresholds are two or more pending user/plan decisions, any blocked or unrecovered failed session, a busy session observed for at least two hours, or at least three attention sessions concentrated in one repository and representing at least 60% of visible attention work.
+
+The panel explicitly labels partial metadata coverage. Empty and single-session states avoid inventing coordination risk: no visible sessions does not prove that no work exists, and a single visible session is reported as having no coordination spread.
+
 ### Responsive side-pane layout
 
 Wide canvases use a horizontal family-tree layout. Narrow or tall side panes automatically switch to a compact vertical mission-control layout with readable cards, horizontal ancestry, and scrollable depth. The toolbar also condenses for narrow panes.
@@ -125,6 +143,7 @@ For an explicit local-model UI demonstration:
 ### Controls and gestures
 
 - **Refresh** reloads local session metadata.
+- **Mission briefing** expands or collapses the deterministic operational summary.
 - **Current** centers the current session.
 - **Width** fits the tree to a readable minimum card scale.
 - **+ / -** zooms.
@@ -154,6 +173,7 @@ The installable extension lives entirely in [`.github/extensions/agent-constella
 |---|---|
 | `extension.mjs` | Declares the canvas, open schema, actions, and lifecycle with the Copilot SDK. |
 | `data.mjs` | Reads local sources, derives statuses and relationships, sanitizes metadata, filters state, and isolates demo decoration. |
+| `briefing.mjs` | Builds the versioned deterministic operational briefing and fixed bottleneck heuristics from sanitized state. |
 | `layout.mjs` | Produces deterministic horizontal/vertical layouts, completed-shelf behavior, model labels, fit scaling, and pinch transforms. |
 | `renderer.mjs` | Generates the accessible, responsive, theme-aware canvas UI. |
 | `server.mjs` | Hosts the token-protected loopback page, JSON state, refresh endpoint, and SSE stream. |
@@ -176,6 +196,8 @@ The extension tolerates missing tables, columns, databases, and event files. It 
 - It follows the current session's accessible ancestor/descendant tree, not every unrelated Copilot session on the machine.
 - Copilot's local app data schema can evolve. The collector uses guarded reads and fallbacks, but a future schema change may temporarily reduce available metadata.
 - Statuses are inferred from local app state and recent event metadata; unavailable sources reduce precision.
+- Mission briefing conclusions are limited to the visible ancestor/descendant tree and available sanitized metadata. Its bottleneck heuristics indicate threshold matches, not root causes or predictions.
+- A completion is considered recent only when a sanitized completion timestamp falls within the previous 24 hours.
 - Local-model classification requires explicit provider or runtime-prefixed model metadata.
 - The canvas is a local operational view, not a durable historical analytics store.
 - Canvas extensions require a GitHub Copilot build with extension canvas support.
