@@ -87,6 +87,10 @@ function compareNodes(left, right) {
     );
 }
 
+function visualParentId(node) {
+    return node?.syntheticParentId || node?.parentId;
+}
+
 function ancestry(nodeId, byId) {
     const ids = [];
     const visited = new Set();
@@ -94,7 +98,8 @@ function ancestry(nodeId, byId) {
     while (current && !visited.has(current.id)) {
         visited.add(current.id);
         ids.push(current.id);
-        current = current.parentId ? byId.get(current.parentId) : undefined;
+        const parentId = visualParentId(current);
+        current = parentId ? byId.get(parentId) : undefined;
     }
     return ids;
 }
@@ -109,7 +114,7 @@ function visibleTree(nodes, rootId, currentSessionId, completedExpanded) {
     }
 
     const collapsible = [...byId.values()].filter(
-        (node) => node.status === "completed" && !required.has(node.id)
+        (node) => !node.synthetic && node.status === "completed" && !required.has(node.id)
     );
     const collapsed = completedExpanded ? [] : collapsible;
     const collapsedIds = new Set(collapsed.map((node) => node.id));
@@ -132,9 +137,10 @@ function childMap(nodes) {
     const byId = new Map(nodes.map((node) => [node.id, node]));
     const children = new Map();
     for (const node of nodes) {
-        if (!node.parentId || !byId.has(node.parentId)) continue;
-        if (!children.has(node.parentId)) children.set(node.parentId, []);
-        children.get(node.parentId).push(node);
+        const parentId = visualParentId(node);
+        if (!parentId || !byId.has(parentId)) continue;
+        if (!children.has(parentId)) children.set(parentId, []);
+        children.get(parentId).push(node);
     }
     for (const items of children.values()) items.sort(compareNodes);
     return { byId, children };
@@ -294,7 +300,13 @@ export function layoutResponsiveConstellation(
         .filter((edge) => ids.has(edge.source) && ids.has(edge.target))
         .map((edge) => ({ ...edge }));
     if (completedCount && ids.has(completedShelfId) && ids.has(state.rootId)) {
-        edges.push({ source: state.rootId, target: completedShelfId, isShelf: true });
+        edges.push({
+            source: state.rootId,
+            target: completedShelfId,
+            kind: "shelf",
+            synthetic: true,
+            isShelf: true,
+        });
     }
     return {
         ...layout,

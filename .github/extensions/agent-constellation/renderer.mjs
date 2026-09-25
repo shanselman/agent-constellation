@@ -88,6 +88,15 @@ export function renderConstellationHtml(config) {
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .scope-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .scope-control select { max-width: 120px; padding: 3px 22px 3px 6px; }
     .status-strip {
       display: flex;
       align-items: center;
@@ -178,6 +187,11 @@ export function renderConstellationHtml(config) {
     }
     .edge.attention { stroke: var(--waiting); stroke-width: 2.2; }
     .edge.shelf { stroke-dasharray: 3 5; opacity: .7; }
+    .edge.containment {
+      stroke: var(--plan);
+      stroke-dasharray: 2 7;
+      opacity: .78;
+    }
     @keyframes flow { to { stroke-dashoffset: -32; } }
     .node { cursor: pointer; }
     .node-card {
@@ -195,6 +209,11 @@ export function renderConstellationHtml(config) {
     }
     .node.current.selected .node-card { stroke-dasharray: none; }
     .node.shelf .node-card { fill: color-mix(in srgb, var(--card-bg) 78%, var(--complete) 22%); stroke-dasharray: 5 4; }
+    .node.synthetic .node-card {
+      fill: color-mix(in srgb, var(--card-bg) 76%, var(--plan) 24%);
+      stroke: var(--plan);
+      stroke-dasharray: 3 5;
+    }
     .node-halo { fill: none; stroke: var(--status-color); opacity: 0; transform-origin: center; }
     .node.busy .node-halo { opacity: .46; animation: pulse 1.8s ease-out infinite; }
     .node.waiting-user .node-card, .node.waiting-plan .node-card {
@@ -305,6 +324,7 @@ export function renderConstellationHtml(config) {
       .chrome { flex-wrap: wrap; row-gap: 3px; }
       .brand { flex: 1 1 auto; }
       .summary { max-width: 150px; }
+      .scope-control span { display: none; }
       .status-strip { order: 3; flex: 1 0 100%; }
       .status-strip button { font-size: 11px; }
       .toolbar .optional-label { display: none; }
@@ -332,6 +352,13 @@ export function renderConstellationHtml(config) {
         <h1>Constellation</h1>
         <span class="summary" id="summary">Loading…</span>
       </div>
+      <label class="scope-control" for="scopeSelect">
+        <span>View</span>
+        <select id="scopeSelect" aria-describedby="scopeDescription">
+          <option value="tree">Tree</option>
+          <option value="all">All sessions</option>
+        </select>
+      </label>
       <div class="status-strip" id="legend" aria-label="Mission status counts"></div>
       <div class="toolbar" aria-label="Constellation controls">
         <button id="refresh" type="button" title="Refresh live state">↻<span class="sr-only">Refresh</span></button>
@@ -359,6 +386,9 @@ export function renderConstellationHtml(config) {
       <label>Repository
         <select id="repoFilter"><option value="">All repositories</option></select>
       </label>
+      <label>Project
+        <select id="projectFilter"><option value="">All projects</option></select>
+      </label>
     </section>
     <main class="workspace">
       <section class="stage" id="stage" aria-label="Agent family tree">
@@ -377,6 +407,9 @@ export function renderConstellationHtml(config) {
         <div class="source-note" id="sourceNote">Sanitized metadata only.</div>
       </section>
     </main>
+  </div>
+  <div class="sr-only" id="scopeDescription">
+    Tree shows the current session family. All sessions adds a synthetic overview container; dashed grouping connections do not represent parent-child lineage.
   </div>
   <div class="sr-only" id="live" aria-live="polite"></div>
   <script type="module">
@@ -409,6 +442,8 @@ export function renderConstellationHtml(config) {
       selectedId: null,
       status: config.initialStatus || "",
       repository: config.initialRepository || "",
+      project: config.initialProject || "",
+      scope: config.initialScope === "all" ? "all" : "tree",
       completedExpanded: false,
       transform: { x: 0, y: 0, k: 1 },
       pointers: new Map(),
@@ -416,8 +451,9 @@ export function renderConstellationHtml(config) {
       firstRender: true
     };
     const elements = Object.fromEntries([
-      "summary", "refresh", "home", "fitWidth", "zoomOut", "zoomIn",
+      "summary", "scopeSelect", "refresh", "home", "fitWidth", "zoomOut", "zoomIn",
       "filtersToggle", "filters", "statusFilter", "repoFilter", "legend",
+      "projectFilter",
       "stage", "constellation", "viewport", "edges", "nodes", "empty",
       "inspector", "inspectorClose", "detailName", "detailStatus", "details",
       "sourceNote", "live"
@@ -466,6 +502,7 @@ export function renderConstellationHtml(config) {
     }
 
     function statusText(node) {
+      if (node.synthetic) return "Grouping only";
       const base = statusLabels[node.status] || node.status;
       return node.status === "busy" && node.busySince
         ? base + " · " + elapsed(node.busySince)
@@ -474,22 +511,29 @@ export function renderConstellationHtml(config) {
 
     function filteredState() {
       if (!state.data) return null;
-      if (!state.status && !state.repository) return state.data;
+      if (!state.status && !state.repository && !state.project) return state.data;
       const keep = new Set(
         state.data.nodes.filter((node) => {
+          if (node.synthetic) return false;
           const statusMatch = !state.status || node.status === state.status;
           const repoMatch = !state.repository || node.repository === state.repository;
-          return statusMatch && repoMatch;
+          const projectMatch = !state.project ||
+            node.projectId === state.project ||
+            node.projectName === state.project;
+          return statusMatch && repoMatch && projectMatch;
         }).map((node) => node.id)
       );
       keep.add(state.data.rootId);
-      keep.add(state.data.currentSessionId);
+      if (state.data.diagnostics?.effectiveScope !== "all") {
+        keep.add(state.data.currentSessionId);
+      }
       let changed = true;
       while (changed) {
         changed = false;
         state.data.nodes.forEach((node) => {
-          if (keep.has(node.id) && node.parentId && !keep.has(node.parentId)) {
-            keep.add(node.parentId);
+          const parentId = node.syntheticParentId || node.parentId;
+          if (keep.has(node.id) && parentId && !keep.has(parentId)) {
+            keep.add(parentId);
             changed = true;
           }
         });
@@ -579,6 +623,7 @@ export function renderConstellationHtml(config) {
     }
 
     function openInspector(node, announce) {
+      if (node.synthetic) return;
       state.selectedId = node.id;
       elements.inspector.classList.add("open");
       elements.inspector.setAttribute("aria-hidden", "false");
@@ -586,6 +631,7 @@ export function renderConstellationHtml(config) {
       elements.detailStatus.className = "detail-status status-" + node.status;
       elements.detailStatus.lastElementChild.textContent = statusText(node);
       elements.details.replaceChildren();
+      appendDetail("Project", node.projectName);
       appendDetail("Repository", node.repository);
       appendDetail("Branch", node.branch, true);
       appendDetail("Mode", node.mode);
@@ -626,7 +672,14 @@ export function renderConstellationHtml(config) {
       if (node.isShelf) {
         return node.name + ", " + (state.completedExpanded ? "collapse completed agents" : "expand completed agents");
       }
+      if (node.synthetic) {
+        return node.name + ", synthetic grouping container, not a session or parent-child relationship";
+      }
       const parts = [node.name, statusText(node), node.repository];
+      if (node.projectName) parts.push("project " + node.projectName);
+      if (node.syntheticParentId) {
+        parts.push("independent root grouped for display; no recorded parent");
+      }
       if (node.isCurrent) parts.push("current session");
       if (node.isRoot) parts.push("constellation root");
       if (node.branch) parts.push("branch " + node.branch);
@@ -673,6 +726,18 @@ export function renderConstellationHtml(config) {
       state.repository = elements.repoFilter.value;
     }
 
+    function renderProjects() {
+      const current = state.project;
+      elements.projectFilter.replaceChildren(new Option("All projects", ""));
+      (state.data.projects || []).forEach((project) => {
+        const value = project.id || project.name;
+        elements.projectFilter.add(new Option(project.name, value));
+      });
+      const values = [...elements.projectFilter.options].map((option) => option.value);
+      elements.projectFilter.value = values.includes(current) ? current : "";
+      state.project = elements.projectFilter.value;
+    }
+
     function edgePath(edge, byId) {
       const source = byId.get(edge.source);
       const target = byId.get(edge.target);
@@ -704,8 +769,13 @@ export function renderConstellationHtml(config) {
           class: "edge" +
             (target?.status === "busy" ? " working" : "") +
             (target?.status === "waiting-user" || target?.status === "waiting-plan" ? " attention" : "") +
-            (edge.isShelf ? " shelf" : ""),
-          "aria-hidden": "true"
+            (edge.isShelf ? " shelf" : "") +
+            (edge.kind === "containment" ? " containment" : ""),
+          "aria-hidden": edge.kind === "containment" ? "false" : "true",
+          role: edge.kind === "containment" ? "img" : undefined,
+          "aria-label": edge.kind === "containment"
+            ? "Synthetic grouping connection; not parent-child lineage"
+            : undefined
         });
         elements.edges.appendChild(path);
       });
@@ -732,7 +802,8 @@ export function renderConstellationHtml(config) {
           class: "node " + node.status + " status-" + node.status +
             (node.isRoot ? " root" : "") +
             (node.isCurrent ? " current" : "") +
-            (node.isShelf ? " shelf" : ""),
+            (node.isShelf ? " shelf" : "") +
+            (node.synthetic ? " synthetic" : ""),
           transform: "translate(" + node.x + " " + node.y + ")",
           tabindex: "0",
           role: "treeitem",
@@ -822,7 +893,7 @@ export function renderConstellationHtml(config) {
         }
         group.addEventListener("click", () => {
           if (node.isShelf) toggleCompletedShelf();
-          else openInspector(node, true);
+          else if (!node.synthetic) openInspector(node, true);
         });
         group.addEventListener("keydown", (event) => handleNodeKey(event, node));
         elements.nodes.appendChild(group);
@@ -834,7 +905,7 @@ export function renderConstellationHtml(config) {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         if (node.isShelf) toggleCompletedShelf();
-        else openInspector(node, true);
+        else if (!node.synthetic) openInspector(node, true);
         return;
       }
       if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
@@ -865,9 +936,12 @@ export function renderConstellationHtml(config) {
       const counts = state.data.counts;
       const waiting = (counts["waiting-user"] || 0) + (counts["waiting-plan"] || 0);
       const live = waiting + (counts.busy || 0) + (counts.idle || 0);
+      const scopeLabel = state.data.diagnostics?.effectiveScope === "all"
+        ? "All sessions"
+        : "Tree";
       elements.summary.textContent =
-        live + " live · " + (counts.completed || 0) + " completed · " +
-        state.layout.orientation;
+        scopeLabel + " · " + live + " live · " +
+        (counts.completed || 0) + " completed · " + state.layout.orientation;
     }
 
     function render() {
@@ -930,11 +1004,23 @@ export function renderConstellationHtml(config) {
     function acceptState(next, announce) {
       if (!next || !Array.isArray(next.nodes) || !Array.isArray(next.edges)) return;
       state.data = next;
+      state.scope = next.diagnostics?.effectiveScope === "all" ? "all" : "tree";
+      elements.scopeSelect.value = state.scope;
       renderRepositories();
+      renderProjects();
       render();
+      elements.stage.setAttribute(
+        "aria-label",
+        state.scope === "all"
+          ? "All Copilot sessions overview; dashed connections are synthetic grouping only"
+          : "Agent family tree"
+      );
       const selected = next.nodes.find((node) => node.id === state.selectedId);
       if (selected && elements.inspector.classList.contains("open")) openInspector(selected, false);
-      if (announce) elements.live.textContent = "Constellation refreshed. " + next.nodes.length + " sessions available.";
+      if (announce) {
+        elements.live.textContent = "Constellation refreshed. " +
+          (next.diagnostics?.selectedRealSessionCount || 0) + " sessions available.";
+      }
       const limitations = next.source?.limitations || [];
       elements.sourceNote.textContent = limitations.length
         ? "Sanitized metadata only. " + limitations.join(" ")
@@ -962,6 +1048,28 @@ export function renderConstellationHtml(config) {
         elements.live.textContent = "Constellation refresh failed. Existing state remains visible.";
       } finally {
         elements.refresh.disabled = false;
+      }
+    }
+
+    async function switchScope(scope) {
+      if (!["tree", "all"].includes(scope) || scope === state.scope) return;
+      elements.scopeSelect.disabled = true;
+      try {
+        const next = await fetchState(config.scopeUrl, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ scope })
+        });
+        state.firstRender = true;
+        acceptState(next, false);
+        elements.live.textContent =
+          "View changed to " + (scope === "all" ? "All sessions" : "Tree") + ". " +
+          (next.diagnostics?.selectedRealSessionCount || 0) + " sessions available.";
+      } catch {
+        elements.scopeSelect.value = state.scope;
+        elements.live.textContent = "Scope change failed. Existing view remains visible.";
+      } finally {
+        elements.scopeSelect.disabled = false;
       }
     }
 
@@ -1005,6 +1113,8 @@ export function renderConstellationHtml(config) {
     }
 
     elements.refresh.addEventListener("click", () => refresh(true));
+    elements.scopeSelect.value = state.scope;
+    elements.scopeSelect.addEventListener("change", () => switchScope(elements.scopeSelect.value));
     elements.home.addEventListener("click", () => homeCurrent());
     elements.fitWidth.addEventListener("click", fitReadableWidth);
     elements.zoomIn.addEventListener("click", () => setZoom(state.transform.k * 1.16));
@@ -1022,6 +1132,10 @@ export function renderConstellationHtml(config) {
     });
     elements.repoFilter.addEventListener("change", () => {
       state.repository = elements.repoFilter.value;
+      render();
+    });
+    elements.projectFilter.addEventListener("change", () => {
+      state.project = elements.projectFilter.value;
       render();
     });
     elements.constellation.addEventListener("wheel", (event) => {

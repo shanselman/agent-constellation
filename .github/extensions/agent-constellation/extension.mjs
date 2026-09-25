@@ -32,8 +32,12 @@ const copilotHome =
     path.join(process.env.USERPROFILE ?? process.env.HOME ?? ".", ".copilot");
 let session;
 
-function collectFor(sessionId, { demoLocalModel = false } = {}) {
-    const state = collectConstellationState({ currentSessionId: sessionId, copilotHome });
+function collectFor(sessionId, { demoLocalModel = false, scope = "tree" } = {}) {
+    const state = collectConstellationState({
+        currentSessionId: sessionId,
+        copilotHome,
+        scope,
+    });
     return demoLocalModel ? decorateConstellationForDemo(state) : state;
 }
 
@@ -54,7 +58,7 @@ session = await joinSession({
             id: "agent-constellation",
             displayName: "Agent Constellation",
             description:
-                "A live, accessible family tree of the current Copilot project session and its descendants.",
+                "A live, accessible family tree or all-sessions overview for Copilot project sessions.",
             inputSchema: CANVAS_OPEN_INPUT_SCHEMA,
             actions: [
                 {
@@ -74,6 +78,7 @@ session = await joinSession({
                             rootId: state.rootId,
                             nodeCount: state.nodes.length,
                             counts: state.counts,
+                            diagnostics: state.diagnostics,
                             source: state.source,
                         };
                     },
@@ -102,18 +107,21 @@ session = await joinSession({
                     servers,
                     ctx.instanceId,
                     {
-                        dataProvider: () =>
+                        dataProvider: ({ scope }) =>
                             collectFor(ctx.sessionId, {
                                 demoLocalModel: ctx.input?.demoLocalModel === true,
+                                scope,
                             }),
                         initialRepository: ctx.input?.repository,
+                        initialProject: ctx.input?.project,
                         initialStatus: ctx.input?.status,
+                        initialScope: ctx.input?.scope,
                         logger: (message, options) => session?.log?.(message, options),
                     }
                 );
                 return {
                     title: "Agent Constellation",
-                    status: `${entry.state.nodes.length} sessions`,
+                    status: `${entry.state.diagnostics.selectedRealSessionCount} sessions`,
                     url: entry.openUrl,
                 };
             },

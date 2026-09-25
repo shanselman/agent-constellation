@@ -4,7 +4,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/shanselman/agent-constellation)](https://github.com/shanselman/agent-constellation/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Agent Constellation is a live, animated family tree and mission-control view for GitHub Copilot project sessions.** It turns a coordinator and its descendant sessions into an accessible canvas where you can see what is busy, idle, completed, waiting for you, or blocked.
+**Agent Constellation is a live, animated family tree and mission-control view for GitHub Copilot sessions.** It can show one coordinator family or an explicit all-sessions overview across independent projects while keeping recorded lineage distinct from display-only grouping.
 
 ![Agent Constellation showing a coordinator, descendant sessions, model badges, and a completed-agent shelf](docs/agent-constellation.png)
 
@@ -24,7 +24,11 @@ Agent Constellation makes those relationships visible. The current session is ma
 
 ### Live family tree and mission control
 
-The canvas follows the topmost accessible ancestor of the current session and includes that session's descendant project sessions. Cards show the session name, repository, current status, and—when available—the selected model and reasoning effort.
+The default `tree` scope follows the topmost accessible ancestor of the current session and includes that session's descendants, preserving the original family-tree behavior. The opt-in `all` scope retains every discovered sanitized app session and recorded parent-child relationship. Independent real roots are placed under a synthetic **All sessions** overview node with dashed containment connections that are explicitly labeled as grouping—not lineage.
+
+Cards show the session name, project, repository, current status, and—when available—the selected model and reasoning effort. Real-session counts exclude the synthetic overview node. Scope diagnostics report requested/effective scope, selected and discovered real-session counts, independent real-root count, source availability, and partial relationship/project limitations.
+
+Repositoryless sessions are labeled conservatively. A session becomes **Home chat** under **My Copilot** only when app metadata positively identifies its session type as `general_chat`; arbitrary repositoryless CLI or fallback sessions remain **Standalone session** under **No project**.
 
 Statuses include:
 
@@ -62,6 +66,8 @@ For demonstrations, the canvas accepts an isolated `demoLocalModel: true` open i
 
 Each open canvas gets its own dependency-free HTTP server bound to an ephemeral `127.0.0.1` port. Server-Sent Events push state changes to the canvas, with lightweight polling as a fallback. Manual refresh and the agent-callable `refresh` action are also available.
 
+Scope and selector state are isolated per canvas instance. The in-canvas **Tree / All sessions** selector refreshes that instance through its existing authenticated loopback server, preserves valid status/project/repository filters, and never creates a user-global preference or changes another open canvas.
+
 ## Privacy and local security
 
 Agent Constellation is deliberately local-first:
@@ -69,6 +75,7 @@ Agent Constellation is deliberately local-first:
 - Reads Copilot's local SQLite databases in **read-only** mode.
 - Reads only a bounded tail of local session event metadata.
 - Returns sanitized identifiers and operational metadata—not prompts, chat messages, secrets, tool arguments, or repository file contents.
+- Uses project names, repository labels, and session-type metadata without returning raw machine paths or session titles.
 - Binds its renderer server to `127.0.0.1` only.
 - Requires an unguessable per-canvas bootstrap token, then stores it in an `HttpOnly`, `SameSite=Strict` cookie.
 - Rejects non-loopback hosts, cross-site requests, oversized request bodies, and unexpected refresh payloads.
@@ -118,6 +125,26 @@ Copilot opens the canvas for the current session family. You can also request an
 
 > Open Agent Constellation filtered to busy sessions.
 
+Scope is contextual and explicit:
+
+```json
+{ "scope": "tree" }
+```
+
+is the backward-compatible default for individual-session views.
+
+```json
+{ "scope": "all" }
+```
+
+opens the cross-project overview, such as from My Copilot home. A project-scoped caller can combine `scope: "all"` with a safe project identifier/name and/or repository filter:
+
+```json
+{ "scope": "all", "project": "agent-constellation", "repository": "shanselman/agent-constellation" }
+```
+
+The extension does not infer a new default from where it happens to be opened; callers should provide explicit scope and project/repository context when available.
+
 For an explicit local-model UI demonstration:
 
 > Open Agent Constellation with `demoLocalModel` set to `true`.
@@ -125,10 +152,11 @@ For an explicit local-model UI demonstration:
 ### Controls and gestures
 
 - **Refresh** reloads local session metadata.
+- **View** switches only the current canvas between **Tree** and **All sessions**.
 - **Current** centers the current session.
 - **Width** fits the tree to a readable minimum card scale.
 - **+ / -** zooms.
-- **Filter** narrows by status or repository.
+- **Filter** narrows by status, project, or repository.
 - **Click or press Enter/Space** on a session to open its inspector.
 - **Arrow keys** move focus directionally between session cards.
 - **Click the Completed shelf** to expand or collapse completed descendants.
@@ -153,11 +181,11 @@ The installable extension lives entirely in [`.github/extensions/agent-constella
 | File | Responsibility |
 |---|---|
 | `extension.mjs` | Declares the canvas, open schema, actions, and lifecycle with the Copilot SDK. |
-| `data.mjs` | Reads local sources, derives statuses and relationships, sanitizes metadata, filters state, and isolates demo decoration. |
-| `layout.mjs` | Produces deterministic horizontal/vertical layouts, completed-shelf behavior, model labels, fit scaling, and pinch transforms. |
-| `renderer.mjs` | Generates the accessible, responsive, theme-aware canvas UI. |
-| `server.mjs` | Hosts the token-protected loopback page, JSON state, refresh endpoint, and SSE stream. |
-| `agent-constellation.test.mjs` | Covers collection, sanitization, relationships, responsive layout, gestures, local-model semantics, renderer accessibility, and loopback protections. |
+| `data.mjs` | Reads local sources, derives statuses and relationships, sanitizes project/session metadata, normalizes tree/all scopes, filters state, and isolates demo decoration. |
+| `layout.mjs` | Produces deterministic horizontal/vertical layouts, explicit synthetic containment, completed-shelf behavior, model labels, fit scaling, and pinch transforms. |
+| `renderer.mjs` | Generates the accessible, responsive, theme-aware canvas UI and per-view scope/project/repository controls. |
+| `server.mjs` | Hosts the token-protected loopback page, JSON state, per-instance scope endpoint, refresh endpoint, and SSE stream. |
+| `agent-constellation.test.mjs` | Covers multi-project collection, sanitization, identity labels, real/synthetic relationships, scope isolation, responsive layout, gestures, local-model semantics, renderer accessibility, and loopback protections. |
 | `copilot-extension.json` | Identifies the folder as a shareable/installable Copilot extension. |
 
 ### Local data sources
@@ -172,8 +200,10 @@ The extension tolerates missing tables, columns, databases, and event files. It 
 
 ## Limitations
 
-- Agent Constellation visualizes **Copilot project sessions and their recorded descendants**. In-process task subagents are not separate project sessions and therefore do not appear as individual cards.
-- It follows the current session's accessible ancestor/descendant tree, not every unrelated Copilot session on the machine.
+- Agent Constellation visualizes recorded **Copilot app sessions**. In-process task subagents are not separate app sessions and therefore do not appear as individual cards.
+- The default remains the current session's accessible ancestor/descendant tree. Unrelated sessions appear only when `scope: "all"` is explicitly requested or selected in that canvas.
+- Synthetic all-sessions containment communicates display grouping only; it cannot recover lineage missing from local relationship metadata.
+- Project and relationship metadata can be partial for older or evolving app schemas. Diagnostics identify those limitations rather than guessing.
 - Copilot's local app data schema can evolve. The collector uses guarded reads and fallbacks, but a future schema change may temporarily reduce available metadata.
 - Statuses are inferred from local app state and recent event metadata; unavailable sources reduce precision.
 - Local-model classification requires explicit provider or runtime-prefixed model metadata.
