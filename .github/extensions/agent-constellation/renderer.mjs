@@ -178,6 +178,7 @@ export function renderConstellationHtml(config) {
     }
     .edge.attention { stroke: var(--waiting); stroke-width: 2.2; }
     .edge.shelf { stroke-dasharray: 3 5; opacity: .7; }
+    .edge.cluster, .edge.collapsed-summary { stroke-dasharray: 4 5; opacity: .8; }
     @keyframes flow { to { stroke-dashoffset: -32; } }
     .node { cursor: pointer; }
     .node-card {
@@ -195,6 +196,10 @@ export function renderConstellationHtml(config) {
     }
     .node.current.selected .node-card { stroke-dasharray: none; }
     .node.shelf .node-card { fill: color-mix(in srgb, var(--card-bg) 78%, var(--complete) 22%); stroke-dasharray: 5 4; }
+    .node.cluster .node-card, .node.collapsed-summary .node-card {
+      fill: color-mix(in srgb, var(--card-bg) 84%, var(--status-color) 16%);
+      stroke-dasharray: 5 4;
+    }
     .node-halo { fill: none; stroke: var(--status-color); opacity: 0; transform-origin: center; }
     .node.busy .node-halo { opacity: .46; animation: pulse 1.8s ease-out infinite; }
     .node.waiting-user .node-card, .node.waiting-plan .node-card {
@@ -256,6 +261,7 @@ export function renderConstellationHtml(config) {
       white-space: nowrap;
     }
     .inspector-close { margin-left: auto; }
+    .subtree-toggle { display: none; white-space: nowrap; }
     .detail-status {
       display: inline-flex;
       align-items: center;
@@ -371,6 +377,7 @@ export function renderConstellationHtml(config) {
         <div class="inspector-head">
           <h2 id="detailName">Session details</h2>
           <div class="detail-status status-idle" id="detailStatus"><span class="dot"></span><span></span></div>
+          <button class="subtree-toggle" id="subtreeToggle" type="button"></button>
           <button class="inspector-close" id="inspectorClose" type="button" aria-label="Close session details">×</button>
         </div>
         <dl id="details"></dl>
@@ -410,6 +417,8 @@ export function renderConstellationHtml(config) {
       status: config.initialStatus || "",
       repository: config.initialRepository || "",
       completedExpanded: false,
+      collapsedNodeIds: new Set(),
+      expandedClusterIds: new Set(),
       transform: { x: 0, y: 0, k: 1 },
       pointers: new Map(),
       gesture: null,
@@ -420,7 +429,7 @@ export function renderConstellationHtml(config) {
       "filtersToggle", "filters", "statusFilter", "repoFilter", "legend",
       "stage", "constellation", "viewport", "edges", "nodes", "empty",
       "inspector", "inspectorClose", "detailName", "detailStatus", "details",
-      "sourceNote", "live"
+      "sourceNote", "subtreeToggle", "live"
     ].map((id) => [id, document.getElementById(id)]));
 
     function svgElement(name, attributes) {
@@ -466,6 +475,12 @@ export function renderConstellationHtml(config) {
     }
 
     function statusText(node) {
+      if (node.isCluster) {
+        return (node.clusterExpanded ? "Collapse " : "Expand ") + node.hiddenCount + " sessions";
+      }
+      if (node.isCollapsedSummary) {
+        return "Expand " + node.hiddenCount + " hidden";
+      }
       const base = statusLabels[node.status] || node.status;
       return node.status === "busy" && node.busySince
         ? base + " · " + elapsed(node.busySince)
@@ -580,6 +595,7 @@ export function renderConstellationHtml(config) {
 
     function openInspector(node, announce) {
       state.selectedId = node.id;
+      const layoutNode = state.layout?.nodes.find((item) => item.id === node.id) || node;
       elements.inspector.classList.add("open");
       elements.inspector.setAttribute("aria-hidden", "false");
       elements.detailName.textContent = node.name;
@@ -599,9 +615,23 @@ export function renderConstellationHtml(config) {
       appendDetail("Pull request", node.pullRequest);
       appendDetail("Issue", node.issue);
       appendDetail("Human gate", node.humanGate?.label);
+      appendDetail(
+        "Descendants",
+        layoutNode.descendantCount ? String(layoutNode.descendantCount) : ""
+      );
+      appendDetail(
+        "Hidden descendants",
+        layoutNode.hiddenDescendantCount ? String(layoutNode.hiddenDescendantCount) : ""
+      );
       appendDetail("Busy elapsed", node.status === "busy" ? elapsed(node.busySince) : "");
       appendDetail("Last activity", node.updatedAt ? new Date(node.updatedAt).toLocaleString() : "");
       appendDetail("Session ID", node.id, true);
+      const canCollapse = Number(layoutNode.descendantCount || 0) > 0;
+      elements.subtreeToggle.style.display = canCollapse ? "inline-flex" : "none";
+      elements.subtreeToggle.textContent = state.collapsedNodeIds.has(node.id)
+        ? "Expand subtree"
+        : "Collapse subtree";
+      elements.subtreeToggle.dataset.id = canCollapse ? node.id : "";
       updateSelection();
       if (announce) elements.live.textContent = "Opened details for " + node.name + ", " + statusText(node);
     }
@@ -625,6 +655,13 @@ export function renderConstellationHtml(config) {
     function nodeAriaLabel(node) {
       if (node.isShelf) {
         return node.name + ", " + (state.completedExpanded ? "collapse completed agents" : "expand completed agents");
+      }
+      if (node.isCluster) {
+        return node.repository + " repository cluster, " + node.hiddenCount + " sessions, " +
+          (node.clusterExpanded ? "collapse cluster" : "expand cluster");
+      }
+      if (node.isCollapsedSummary) {
+        return node.hiddenCount + " descendants hidden, expand subtree";
       }
       const parts = [node.name, statusText(node), node.repository];
       if (node.isCurrent) parts.push("current session");
@@ -704,7 +741,9 @@ export function renderConstellationHtml(config) {
           class: "edge" +
             (target?.status === "busy" ? " working" : "") +
             (target?.status === "waiting-user" || target?.status === "waiting-plan" ? " attention" : "") +
-            (edge.isShelf ? " shelf" : ""),
+            (edge.isShelf ? " shelf" : "") +
+            (edge.isCluster ? " cluster" : "") +
+            (edge.isCollapsedSummary ? " collapsed-summary" : ""),
           "aria-hidden": "true"
         });
         elements.edges.appendChild(path);
@@ -717,6 +756,35 @@ export function renderConstellationHtml(config) {
       elements.live.textContent = state.completedExpanded
         ? "Completed agents expanded."
         : "Completed agents collapsed.";
+    }
+
+    function toggleCluster(node) {
+      if (state.expandedClusterIds.has(node.id)) state.expandedClusterIds.delete(node.id);
+      else state.expandedClusterIds.add(node.id);
+      render();
+      elements.live.textContent = node.clusterExpanded
+        ? node.repository + " repository cluster collapsed."
+        : node.repository + " repository cluster expanded.";
+    }
+
+    function expandCollapsedSummary(node) {
+      state.collapsedNodeIds.delete(node.collapsedParentId);
+      render();
+      const parent = state.layout.nodes.find((item) => item.id === node.collapsedParentId);
+      if (parent) openInspector(parent, false);
+      elements.live.textContent = "Subtree expanded.";
+    }
+
+    function toggleSubtree(nodeId) {
+      if (!nodeId) return;
+      if (state.collapsedNodeIds.has(nodeId)) state.collapsedNodeIds.delete(nodeId);
+      else state.collapsedNodeIds.add(nodeId);
+      render();
+      const node = state.layout.nodes.find((item) => item.id === nodeId);
+      if (node) openInspector(node, false);
+      elements.live.textContent = state.collapsedNodeIds.has(nodeId)
+        ? "Subtree collapsed. Important sessions remain visible."
+        : "Subtree expanded.";
     }
 
     function renderNodes() {
@@ -732,7 +800,9 @@ export function renderConstellationHtml(config) {
           class: "node " + node.status + " status-" + node.status +
             (node.isRoot ? " root" : "") +
             (node.isCurrent ? " current" : "") +
-            (node.isShelf ? " shelf" : ""),
+            (node.isShelf ? " shelf" : "") +
+            (node.isCluster ? " cluster" : "") +
+            (node.isCollapsedSummary ? " collapsed-summary" : ""),
           transform: "translate(" + node.x + " " + node.y + ")",
           tabindex: "0",
           role: "treeitem",
@@ -822,6 +892,8 @@ export function renderConstellationHtml(config) {
         }
         group.addEventListener("click", () => {
           if (node.isShelf) toggleCompletedShelf();
+          else if (node.isCluster) toggleCluster(node);
+          else if (node.isCollapsedSummary) expandCollapsedSummary(node);
           else openInspector(node, true);
         });
         group.addEventListener("keydown", (event) => handleNodeKey(event, node));
@@ -834,6 +906,8 @@ export function renderConstellationHtml(config) {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         if (node.isShelf) toggleCompletedShelf();
+        else if (node.isCluster) toggleCluster(node);
+        else if (node.isCollapsedSummary) expandCollapsedSummary(node);
         else openInspector(node, true);
         return;
       }
@@ -867,6 +941,9 @@ export function renderConstellationHtml(config) {
       const live = waiting + (counts.busy || 0) + (counts.idle || 0);
       elements.summary.textContent =
         live + " live · " + (counts.completed || 0) + " completed · " +
+        (state.layout.hiddenSessionCount
+          ? state.layout.hiddenSessionCount + " grouped · "
+          : "") +
         state.layout.orientation;
     }
 
@@ -876,7 +953,10 @@ export function renderConstellationHtml(config) {
       state.layout = layoutResponsiveConstellation(filteredState(), {
         width: size.width,
         height: size.height,
-        completedExpanded: state.completedExpanded
+        completedExpanded: state.completedExpanded,
+        selectedId: state.selectedId,
+        collapsedNodeIds: state.collapsedNodeIds,
+        expandedClusterIds: state.expandedClusterIds
       });
       const byId = new Map(state.layout.nodes.map((node) => [node.id, node]));
       renderEdges(byId);
@@ -1014,6 +1094,9 @@ export function renderConstellationHtml(config) {
       elements.filtersToggle.setAttribute("aria-expanded", open ? "true" : "false");
     });
     elements.inspectorClose.addEventListener("click", () => closeInspector());
+    elements.subtreeToggle.addEventListener("click", () => {
+      toggleSubtree(elements.subtreeToggle.dataset.id);
+    });
     elements.statusFilter.value = state.status;
     elements.statusFilter.addEventListener("change", () => {
       state.status = elements.statusFilter.value;
@@ -1112,7 +1195,15 @@ export function renderConstellationHtml(config) {
       elements.nodes.querySelectorAll(".node").forEach((group) => {
         const node = state.layout?.nodes.find((item) => item.id === group.dataset.id);
         const label = group.querySelector(".node-status");
-        if (node && label && !node.isShelf) label.textContent = statusText(node);
+        if (
+          node &&
+          label &&
+          !node.isShelf &&
+          !node.isCluster &&
+          !node.isCollapsedSummary
+        ) {
+          label.textContent = statusText(node);
+        }
       });
       if (elements.inspector.classList.contains("open")) {
         const selected = state.data?.nodes.find((node) => node.id === state.selectedId);

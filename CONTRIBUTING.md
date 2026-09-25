@@ -29,7 +29,7 @@ After changing extension code:
 2. Open Agent Constellation from a project session.
 3. Verify the `refresh` and `get_state` actions.
 4. Check wide and narrow/tall layouts.
-5. Exercise keyboard navigation, pan, wheel zoom, pinch zoom, filters, the inspector, and the completed shelf as applicable.
+5. Exercise keyboard navigation, pan, wheel zoom, pinch zoom, filters, repository summaries, subtree collapse, the inspector, and the completed shelf as applicable.
 6. Run `npm run check`.
 
 ## Cafeteria-style experiments
@@ -37,6 +37,8 @@ After changing extension code:
 Treat the project extension on `main` as the shared behavioral foundation. Explore independent ideas in separate branches, worktrees, and pull requests so contributors can evaluate or combine experiments without coupling unrelated changes.
 
 Keep each experiment narrowly scoped, describe the behavior it is testing, and preserve the foundation's zero-runtime-dependency, read-only data, sanitization, loopback-only hosting, and accessibility guarantees. Before publishing an experiment, run `npm run check` and document any manual canvas validation that applies.
+
+For scale or layout changes, include deterministic synthetic coverage for small and large trees, vertical and horizontal layouts, selected/current/attention visibility, independent roots, and real-edge integrity. Synthetic summary edges must remain distinguishable from recorded parent-child edges.
 
 ## Pull requests
 
