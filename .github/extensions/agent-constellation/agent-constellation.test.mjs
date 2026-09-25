@@ -23,18 +23,23 @@ import {
     buildLineageFocusSet,
     buildProtectedRevealSet,
     cardMarkerLayout,
+    compactOverflowNodes,
     completedShelfId,
     defaultGroupingThreshold,
     defaultMinimumGroupSize,
+    defaultOverflowPageSize,
+    defaultVisibleCardBudget,
     describeMeaningfulConstellationChange,
     filterConstellationView,
     filteredProjectRootId,
     fitWidthScale,
     formatModelLabel,
     groupDirectRepositorySiblings,
+    isPlainSearchShortcut,
     layoutResponsiveConstellation,
     normalizeSearchQuery,
     orientationForSize,
+    overflowSummaryId,
     programmaticScrollBehavior,
     resolveVisibleSelection,
     repositoryGroupId,
@@ -298,6 +303,60 @@ function scalableFixtureState(
         projects: true,
         scope,
     });
+}
+
+function homeChatFixtureState(totalSessions = 600) {
+    return normalizeConstellation(
+        Array.from({ length: totalSessions }, (_, index) => ({
+            id: `home-${index}`,
+            name: `Home chat ${String(index).padStart(4, "0")}`,
+            projectName: "My Copilot",
+            repository: "No project",
+            sessionType: "general_chat",
+            isHomeChat: true,
+            status: "idle",
+        })),
+        "home-0",
+        {
+            appDatabase: true,
+            relationships: true,
+            projects: true,
+            scope: "all",
+        }
+    );
+}
+
+function attentionFixtureState({ uniqueRepositories = false } = {}) {
+    return normalizeConstellation(
+        [
+            {
+                id: "attention-root",
+                name: "Attention coordinator",
+                repository: "octo/coordinator",
+                status: "idle",
+            },
+            ...Array.from({ length: 100 }, (_, index) => ({
+                id: `attention-${index}`,
+                parentId: "attention-root",
+                name: `Attention session ${String(index).padStart(3, "0")}`,
+                repository: uniqueRepositories
+                    ? `octo/attention-${String(index).padStart(3, "0")}`
+                    : "octo/attention",
+                status:
+                    index % 3 === 0
+                        ? "waiting-user"
+                        : index % 3 === 1
+                          ? "blocked"
+                          : "failed",
+            })),
+        ],
+        "attention-0",
+        {
+            appDatabase: true,
+            relationships: true,
+            projects: true,
+        }
+    );
 }
 
 test("normalization sanitizes metadata and layout is deterministic", () => {
@@ -926,6 +985,16 @@ test("search normalization matches only sanitized session metadata", () => {
     assert.equal(sessionMatchesSearch({ ...node, synthetic: true }, "resume"), false);
 });
 
+test("search shortcut accepts only unmodified slash", () => {
+    assert.equal(isPlainSearchShortcut({ key: "/" }), true);
+    assert.equal(isPlainSearchShortcut({ key: "/", ctrlKey: true }), false);
+    assert.equal(isPlainSearchShortcut({ key: "/", metaKey: true }), false);
+    assert.equal(isPlainSearchShortcut({ key: "/", altKey: true }), false);
+    assert.equal(isPlainSearchShortcut({ key: "f" }), false);
+    assert.equal(isPlainSearchShortcut({ key: "f", ctrlKey: true }), false);
+    assert.equal(isPlainSearchShortcut({ key: "f", metaKey: true }), false);
+});
+
 test("lineage focus follows real and synthetic visual parents safely", () => {
     const source = normalizeConstellation(
         [
@@ -1041,7 +1110,7 @@ test("search and focus share exact visibility, ancestry, no-match, and reset beh
     assert.equal(reset.visibility.noMatches, false);
 });
 
-test("protected reveal set includes matches, focus, selection, attention, and visual ancestry", () => {
+test("protected reveal set includes only explicit targets and visual ancestry", () => {
     const source = scalableFixtureState(61, 4, "all");
     const protectedIds = buildProtectedRevealSet(source.nodes, {
         rootId: source.rootId,
@@ -1049,19 +1118,25 @@ test("protected reveal set includes matches, focus, selection, attention, and vi
         selectedId: "scale-10",
         directMatchIds: ["scale-42"],
         focusIds: ["scale-20"],
+        revealedIds: ["scale-30"],
     });
     for (const id of [
         overviewRootId,
         "scale-root",
         "scale-0",
-        "scale-1",
-        "scale-2",
-        "scale-3",
         "scale-10",
         "scale-20",
+        "scale-30",
         "scale-42",
     ]) {
         assert.equal(protectedIds.has(id), true, `${id} should be protected`);
+    }
+    for (const id of ["scale-1", "scale-2", "scale-3"]) {
+        assert.equal(
+            protectedIds.has(id),
+            false,
+            `${id} attention status should remain compactable`
+        );
     }
 });
 
@@ -1119,6 +1194,36 @@ test("repository grouping has exact thresholds, boundaries, and deterministic or
     assert.equal(noMinimumGroup.groupCount, 0);
 });
 
+test("overflow compaction is deterministic and honors the explicit hard budget", () => {
+    const source = scalableFixtureState(1001, 1000);
+    const protectedIds = buildProtectedRevealSet(source.nodes, {
+        rootId: source.rootId,
+        currentSessionId: source.currentSessionId,
+    });
+    const first = compactOverflowNodes(source.nodes, source.rootId, {
+        protectedIds,
+        visibleCardBudget: defaultVisibleCardBudget,
+        overflowPageSize: defaultOverflowPageSize,
+    });
+    const second = compactOverflowNodes(
+        [...source.nodes].reverse(),
+        source.rootId,
+        {
+            protectedIds,
+            visibleCardBudget: defaultVisibleCardBudget,
+            overflowPageSize: defaultOverflowPageSize,
+        }
+    );
+    assert.equal(first.nodes.length <= defaultVisibleCardBudget, true);
+    assert.equal(first.overflowCount, 10);
+    assert.equal(first.hiddenSessionCount, 999);
+    assert.equal(first.budgetExceeded, false);
+    assert.deepEqual(
+        first.nodes.map((node) => node.id).sort(),
+        second.nodes.map((node) => node.id).sort()
+    );
+});
+
 test("expanded repository groups persist and selection never dissolves them", () => {
     const source = scalableFixtureState(81, 4);
     const groupId = repositoryGroupId(
@@ -1157,27 +1262,35 @@ test("expanded repository groups persist and selection never dissolves them", ()
     assert.equal(expandedIds.has(groupId), true);
 });
 
-test("dense grouping keeps attention and searched sessions visible with real edges intact", () => {
+test("dense grouping compacts attention while explicit and searched targets retain real edges", () => {
     const source = scalableFixtureState(121, 8);
     const layout = layoutResponsiveConstellation(source, {
         width: 480,
         height: 900,
     });
-    for (const id of ["scale-0", "scale-1", "scale-2", "scale-3"]) {
-        assert.equal(layout.nodes.some((node) => node.id === id), true);
-        assert.equal(
-            layout.edges.some(
-                (edge) =>
-                    edge.source === "scale-root" &&
-                    edge.target === id &&
-                    edge.kind === "parent-child" &&
-                    edge.synthetic === false
-            ),
-            true
-        );
+    assert.equal(layout.nodes.some((node) => node.id === "scale-0"), true);
+    for (const id of ["scale-1", "scale-2", "scale-3"]) {
+        assert.equal(layout.nodes.some((node) => node.id === id), false);
     }
     assert.equal(layout.groupCount, 8);
-    assert.equal(layout.hiddenSessionCount, 116);
+    assert.equal(layout.hiddenSessionCount, 119);
+
+    const revealed = layoutResponsiveConstellation(source, {
+        width: 480,
+        height: 900,
+        revealedIds: ["scale-2"],
+    });
+    assert.equal(revealed.nodes.some((node) => node.id === "scale-2"), true);
+    assert.equal(
+        revealed.edges.some(
+            (edge) =>
+                edge.source === "scale-root" &&
+                edge.target === "scale-2" &&
+                edge.kind === "parent-child" &&
+                edge.synthetic === false
+        ),
+        true
+    );
 
     const searched = selectConstellationVisibility(source, {
         search: "reveal target",
@@ -1201,9 +1314,10 @@ test("100+ session overview stays bounded at required pane widths in both orient
         });
         assert.equal(layout.orientation, "vertical");
         assert.equal(layout.width, Math.max(280, width));
-        assert.equal(layout.nodes.length <= 13, true);
-        assert.equal(layout.height <= 1200, true);
-        assert.equal(layout.hiddenSessionCount, 116);
+        assert.equal(layout.nodes.length <= defaultVisibleCardBudget, true);
+        assert.equal(layout.height <= 3000, true);
+        assert.equal(layout.hiddenSessionCount, 119);
+        assert.equal(layout.budgetExceeded, false);
         for (const node of layout.nodes) {
             assert.equal(node.x - layout.cardWidth / 2 >= 0, true);
             assert.equal(node.x + layout.cardWidth / 2 <= layout.width, true);
@@ -1223,30 +1337,153 @@ test("100+ session overview stays bounded at required pane widths in both orient
     assert.equal(vertical.orientation, "vertical");
 });
 
-test("1,001-session layout benchmark reports bounded reduction", () => {
-    const source = scalableFixtureState(1001, 10);
-    const iterations = 50;
-    layoutResponsiveConstellation(source, { width: 480, height: 900 });
-    const startedAt = performance.now();
-    let layout;
-    for (let index = 0; index < iterations; index++) {
-        layout = layoutResponsiveConstellation(source, {
-            width: 480,
-            height: 900,
-        });
+test("global overflow compaction bounds unique repositories and Home chats", () => {
+    const unique = scalableFixtureState(1001, 1000);
+    const homes = homeChatFixtureState(600);
+    for (const [name, source] of [
+        ["unique repositories", unique],
+        ["Home chats", homes],
+    ]) {
+        for (const width of [320, 480, 700]) {
+            const layout = layoutResponsiveConstellation(source, {
+                width,
+                height: 900,
+            });
+            assert.equal(
+                layout.nodes.length <= defaultVisibleCardBudget,
+                true,
+                `${name} at ${width}px exceeded the card budget`
+            );
+            assert.equal(
+                layout.height <= 3000,
+                true,
+                `${name} at ${width}px exceeded the height budget`
+            );
+            assert.equal(layout.budgetExceeded, false);
+            assert.equal(layout.overflowCount > 0, true);
+        }
     }
-    const averageMilliseconds = (performance.now() - startedAt) / iterations;
-    const visibleCards = layout.nodes.length;
-    const reductionPercent =
-        (1 - visibleCards / source.diagnostics.selectedRealSessionCount) * 100;
-    assert.equal(Number.isFinite(averageMilliseconds), true);
-    assert.equal(visibleCards <= 15, true);
-    assert.equal(reductionPercent >= 98, true);
-    console.log(
-        `benchmark: 1,001 sessions -> ${visibleCards} cards, ` +
-            `${reductionPercent.toFixed(1)}% reduction, ` +
-            `${averageMilliseconds.toFixed(2)} ms average`
+
+    const selected = layoutResponsiveConstellation(unique, {
+        width: 480,
+        height: 900,
+        selectedId: "scale-500",
+    });
+    assert.equal(selected.nodes.some((node) => node.id === "scale-500"), true);
+    const revealed = layoutResponsiveConstellation(unique, {
+        width: 480,
+        height: 900,
+        revealedIds: ["scale-777"],
+    });
+    assert.equal(revealed.nodes.some((node) => node.id === "scale-777"), true);
+});
+
+test("overflow pages expand persistently and retain original lineage", () => {
+    const source = scalableFixtureState(201, 200);
+    const summaryId = overflowSummaryId("scale-root", 0);
+    const collapsed = layoutResponsiveConstellation(source, {
+        width: 480,
+        height: 900,
+    });
+    assert.equal(
+        collapsed.nodes.find((node) => node.id === summaryId)?.overflowExpanded,
+        false
     );
+    const expandedIds = new Set([summaryId]);
+    const expanded = layoutResponsiveConstellation(source, {
+        width: 480,
+        height: 900,
+        expandedOverflowIds: expandedIds,
+    });
+    const rerendered = layoutResponsiveConstellation(source, {
+        width: 480,
+        height: 900,
+        expandedOverflowIds: expandedIds,
+    });
+    for (const layout of [expanded, rerendered]) {
+        assert.equal(
+            layout.nodes.find((node) => node.id === summaryId)?.overflowExpanded,
+            true
+        );
+        const revealedNode = layout.nodes.find(
+            (node) => node.id !== "scale-root" && !node.synthetic
+        );
+        assert.ok(revealedNode);
+        assert.equal(
+            layout.edges.some(
+                (edge) =>
+                    edge.source === "scale-root" &&
+                    edge.target === revealedNode.id &&
+                    edge.synthetic === false
+            ),
+            true
+        );
+    }
+});
+
+test("100 attention sessions compact by default and every explicit target is revealable", () => {
+    for (const uniqueRepositories of [false, true]) {
+        const source = attentionFixtureState({ uniqueRepositories });
+        for (const width of [320, 480, 700]) {
+            const layout = layoutResponsiveConstellation(source, {
+                width,
+                height: 900,
+            });
+            assert.equal(layout.nodes.length <= defaultVisibleCardBudget, true);
+            assert.equal(layout.height <= 3000, true);
+            assert.equal(layout.budgetExceeded, false);
+        }
+        for (let index = 0; index < 100; index++) {
+            const id = `attention-${index}`;
+            const revealed = layoutResponsiveConstellation(source, {
+                width: 480,
+                height: 900,
+                revealedIds: [id],
+            });
+            assert.equal(
+                revealed.nodes.some((node) => node.id === id),
+                true,
+                `${id} should be explicitly revealable`
+            );
+        }
+    }
+});
+
+test("scale benchmark matrix stays within hard card and height budgets", () => {
+    const scenarios = [
+        ["shared-repo-1001", scalableFixtureState(1001, 1)],
+        ["unique-repo-1001", scalableFixtureState(1001, 1000)],
+        ["home-chat-600", homeChatFixtureState(600)],
+        ["attention-shared-100", attentionFixtureState()],
+        [
+            "attention-unique-100",
+            attentionFixtureState({ uniqueRepositories: true }),
+        ],
+    ];
+    const iterations = 20;
+    for (const [name, source] of scenarios) {
+        for (const width of [320, 480, 700]) {
+            layoutResponsiveConstellation(source, { width, height: 900 });
+            const startedAt = performance.now();
+            let layout;
+            for (let index = 0; index < iterations; index++) {
+                layout = layoutResponsiveConstellation(source, {
+                    width,
+                    height: 900,
+                });
+            }
+            const averageMilliseconds =
+                (performance.now() - startedAt) / iterations;
+            assert.equal(layout.nodes.length <= defaultVisibleCardBudget, true);
+            assert.equal(layout.height <= 3000, true);
+            assert.equal(layout.budgetExceeded, false);
+            console.log(
+                `benchmark: ${name} @ ${width}px -> ` +
+                    `${layout.nodes.length} cards, ${layout.height}px, ` +
+                    `${averageMilliseconds.toFixed(2)} ms average`
+            );
+        }
+    }
 });
 
 test("responsive layout is right-pane-first across required breakpoints", () => {
@@ -2278,7 +2515,7 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     assert.match(html, /class: "node-model"/);
     assert.match(
         html,
-        /node\.isShelf \|\| node\.isRepositoryGroup\s*\?\s*""\s*:\s*formatModelLabel/
+        /node\.isShelf \|\| node\.isRepositoryGroup \|\| node\.isOverflowSummary\s*\?\s*""\s*:\s*formatModelLabel/
     );
     assert.match(html, /node\.isLocalModel && !node\.isShelf/);
     assert.match(html, /--local-model:/);
@@ -2300,7 +2537,8 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     );
     assert.match(html, /function toggleShelf\(node\)/);
     assert.match(html, /function toggleRepositoryGroup\(node\)/);
-    assert.match(html, /"aria-expanded": node\.isRepositoryGroup/);
+    assert.match(html, /function toggleOverflowSummary\(node\)/);
+    assert.match(html, /"aria-expanded": node\.isOverflowSummary/);
     assert.match(html, /id="fitWidth"/);
     assert.doesNotMatch(html, />Fit</);
 });
@@ -2341,7 +2579,10 @@ test("renderer preserves SVG focus across refreshes and exposes explicit focus r
     assert.match(html, /class: "node-focus-ring"/);
     assert.match(html, /\.node:focus-visible \.node-focus-ring \{ opacity: 1; \}/);
     assert.match(html, /document\.activeElement\?\.classList\?\.contains\("node"\)/);
-    assert.match(html, /if \(focusedId\) focusNode\(focusedId, \{ reveal: false \}\)/);
+    assert.match(
+        html,
+        /focusedId &&\s*!focusNode\(focusedId, \{ reveal: false \}\)/
+    );
     assert.match(html, /group\.focus\(\{ preventScroll: true \}\)/);
     assert.match(html, /"aria-current": node\.isCurrent \? "true" : undefined/);
     assert.match(html, /state\.selectedId = resolveVisibleSelection\(/);
@@ -2371,8 +2612,18 @@ test("renderer combines search, focus, grouping, and keyboard reset accessibly",
     assert.match(html, /selectConstellationVisibility\(filtered/);
     assert.match(html, /expandedGroupIds: new Set\(\)/);
     assert.match(html, /expandedGroupIds: state\.expandedGroupIds/);
+    assert.match(html, /expandedOverflowIds: new Set\(\)/);
+    assert.match(html, /expandedOverflowIds: state\.expandedOverflowIds/);
+    assert.match(html, /revealedIds: new Set\(\)/);
+    assert.match(html, /revealedIds: state\.revealedIds/);
+    assert.match(html, /state\.revealedIds\.add\(nodeId\)/);
+    assert.match(
+        html,
+        /group = elements\.nodes\.querySelector\(\s*'\[data-id="' \+ CSS\.escape\(nodeId\) \+ '"\]'\s*\)/
+    );
     assert.match(html, /repository group, " \+ node\.totalCount/);
-    assert.match(html, /"aria-expanded": node\.isRepositoryGroup/);
+    assert.match(html, /Overflow page " \+ node\.overflowPage/);
+    assert.match(html, /"aria-expanded": node\.isOverflowSummary/);
     assert.match(html, /visualParentId\(node\)/);
     assert.match(html, /event\.key === "PageUp"/);
     assert.match(html, /event\.key === "PageDown"/);
@@ -2382,17 +2633,11 @@ test("renderer combines search, focus, grouping, and keyboard reset accessibly",
     );
     assert.match(
         html,
-        /if \(event\.key === "Home"\) \{\s*if \(event\.ctrlKey\) return;\s*event\.preventDefault\(\);\s*homeCurrent\(\);/
+        /if \(event\.key === "Home"\) \{\s*if \(event\.ctrlKey\) return;\s*event\.preventDefault\(\);\s*centerCurrent\(\);/
     );
-    assert.doesNotMatch(
-        html,
-        /event\.ctrlKey\s*&&\s*event\.key\.toLowerCase\(\)\s*===\s*"f"/
-    );
-    assert.doesNotMatch(
-        html,
-        /event\.key\.toLowerCase\(\)\s*===\s*"f"\s*&&\s*event\.ctrlKey/
-    );
-    assert.match(html, /event\.key === "\/"/);
+    assert.doesNotMatch(html, /event\.key\.toLowerCase\(\) === "f"/);
+    assert.match(html, /isPlainSearchShortcut\(event\)/);
+    assert.doesNotMatch(html, /event\.key === "\/"/);
     assert.match(html, /Lineage focus cleared\. Search and filters remain active\./);
 });
 

@@ -258,6 +258,11 @@ export function renderConstellationHtml(config) {
       stroke-dasharray: 4 5;
       opacity: .82;
     }
+    .edge.overflow-summary {
+      stroke: var(--plan);
+      stroke-dasharray: 2 5;
+      opacity: .82;
+    }
     @keyframes flow { to { stroke-dashoffset: -32; } }
     .node { cursor: pointer; }
     .node-card {
@@ -294,6 +299,11 @@ export function renderConstellationHtml(config) {
       fill: color-mix(in srgb, var(--card-bg) 78%, var(--busy) 22%);
       stroke: var(--busy);
       stroke-dasharray: 5 4;
+    }
+    .node.overflow-summary .node-card {
+      fill: color-mix(in srgb, var(--card-bg) 76%, var(--plan) 24%);
+      stroke: var(--plan);
+      stroke-dasharray: 3 4;
     }
     .node.focus-origin .node-card {
       stroke-width: 4;
@@ -491,7 +501,7 @@ export function renderConstellationHtml(config) {
       button, select { border-color: ButtonBorder; background: Canvas; color: CanvasText; }
       button:focus-visible, select:focus-visible { outline-color: Highlight; }
       .edge, .edge.working, .edge.attention, .edge.shelf, .edge.containment,
-      .edge.repository-group {
+      .edge.repository-group, .edge.overflow-summary {
         stroke: CanvasText;
       }
       .node-card {
@@ -594,7 +604,7 @@ export function renderConstellationHtml(config) {
     Tree shows the current session family. All sessions adds a synthetic overview container; dashed grouping connections do not represent parent-child lineage.
   </div>
   <div class="sr-only" id="searchHelp">Searches sanitized session names, projects, repositories, branches, pull requests, issues, tasks, models, and statuses.</div>
-  <div class="sr-only" id="keyboardHelp">Use arrow keys between nearby cards, Page Up for the visual parent, Page Down for the first child, Home for the current session, Control Home for the root, F to focus a selected lineage, and Escape to close details or clear focus.</div>
+  <div class="sr-only" id="keyboardHelp">Use arrow keys between nearby cards, Page Up for the visual parent, Page Down for the first child, Home for the current session, Control Home for the root, slash to open search, and Escape to close details or clear focus.</div>
   <div class="sr-only" id="live" aria-live="polite"></div>
   <script type="module">
     import {
@@ -605,6 +615,7 @@ export function renderConstellationHtml(config) {
       filterConstellationView,
       fitWidthScale,
       formatModelLabel,
+      isPlainSearchShortcut,
       layoutResponsiveConstellation,
       programmaticScrollBehavior,
       resolveVisibleSelection,
@@ -646,6 +657,8 @@ export function renderConstellationHtml(config) {
       completedExpanded: config.initialStatus === "completed",
       archivedExpanded: config.initialStatus === "archived",
       expandedGroupIds: new Set(),
+      expandedOverflowIds: new Set(),
+      revealedIds: new Set(),
       transform: { x: 0, y: 0, k: 1 },
       pointers: new Map(),
       gesture: null,
@@ -761,6 +774,11 @@ export function renderConstellationHtml(config) {
     }
 
     function statusText(node) {
+      if (node.isOverflowSummary) {
+        return node.overflowExpanded
+          ? "Collapse " + node.totalCount + " sessions"
+          : "Expand " + node.hiddenCount + " hidden sessions";
+      }
       if (node.isRepositoryGroup) {
         return node.groupExpanded
           ? "Collapse " + node.totalCount + " sessions"
@@ -880,7 +898,7 @@ export function renderConstellationHtml(config) {
     }
 
     function openInspector(node, announce) {
-      if (node.synthetic || node.isRepositoryGroup) return;
+      if (node.synthetic || node.isRepositoryGroup || node.isOverflowSummary) return;
       state.selectedId = node.id;
       state.rovingId = node.id;
       elements.inspector.classList.add("open");
@@ -921,10 +939,23 @@ export function renderConstellationHtml(config) {
     }
 
     function focusNode(nodeId, { reveal = true, smooth = true } = {}) {
-      const group = elements.nodes.querySelector(
+      let group = elements.nodes.querySelector(
         '[data-id="' + CSS.escape(nodeId) + '"]'
       );
-      if (!group) return;
+      if (
+        !group &&
+        reveal &&
+        state.data?.nodes.some((node) => node.id === nodeId && !node.synthetic)
+      ) {
+        state.revealedIds.add(nodeId);
+        render();
+        group = elements.nodes.querySelector(
+          '[data-id="' + CSS.escape(nodeId) + '"]'
+        );
+      }
+      if (!group) return false;
+      state.rovingId = nodeId;
+      updateSelection();
       group.focus({ preventScroll: true });
       if (reveal) {
         group.scrollIntoView({
@@ -936,6 +967,7 @@ export function renderConstellationHtml(config) {
           })
         });
       }
+      return true;
     }
 
     function updateSelection() {
@@ -961,6 +993,13 @@ export function renderConstellationHtml(config) {
           (node.groupExpanded
             ? "expanded, collapse repository group"
             : node.hiddenCount + " hidden, expand repository group");
+      }
+      if (node.isOverflowSummary) {
+        return "Overflow page " + node.overflowPage + ", " + node.totalCount +
+          " sessions across " + node.memberRootCount + " hidden subtrees, " +
+          (node.overflowExpanded
+            ? "expanded, collapse overflow page"
+            : "collapsed, expand overflow page");
       }
       if (node.synthetic) {
         return node.name + ", synthetic grouping container, not a session or parent-child relationship";
@@ -1096,7 +1135,8 @@ export function renderConstellationHtml(config) {
             (target?.status === "waiting-user" || target?.status === "waiting-plan" ? " attention" : "") +
             (edge.isShelf ? " shelf" : "") +
             (edge.kind === "containment" ? " containment" : "") +
-            (edge.isRepositoryGroup ? " repository-group" : ""),
+            (edge.isRepositoryGroup ? " repository-group" : "") +
+            (edge.isOverflowSummary ? " overflow-summary" : ""),
           "aria-hidden": "true"
         });
         elements.edges.appendChild(path);
@@ -1122,9 +1162,23 @@ export function renderConstellationHtml(config) {
       }
       state.rovingId = node.id;
       render();
-      requestAnimationFrame(() => focusNode(node.id, { scroll: false }));
+      requestAnimationFrame(() => focusNode(node.id, { reveal: false }));
       elements.live.textContent = node.repository + " repository group " +
         (node.groupExpanded ? "collapsed." : "expanded.");
+    }
+
+    function toggleOverflowSummary(node) {
+      if (state.expandedOverflowIds.has(node.id)) {
+        state.expandedOverflowIds.delete(node.id);
+      } else {
+        state.expandedOverflowIds.add(node.id);
+      }
+      state.rovingId = node.id;
+      render();
+      requestAnimationFrame(() => focusNode(node.id, { reveal: false }));
+      elements.live.textContent =
+        "Overflow page " + node.overflowPage + " " +
+        (node.overflowExpanded ? "collapsed." : "expanded.");
     }
 
     function renderNodes() {
@@ -1152,7 +1206,8 @@ export function renderConstellationHtml(config) {
       });
       const markerLayout = cardMarkerLayout(width, height);
       state.layout.nodes.forEach((node) => {
-        const modelLabel = node.isShelf || node.isRepositoryGroup
+        const modelLabel =
+          node.isShelf || node.isRepositoryGroup || node.isOverflowSummary
           ? ""
           : formatModelLabel(node.model, node.reasoningEffort);
         const hasModelLabel = Boolean(modelLabel);
@@ -1163,6 +1218,7 @@ export function renderConstellationHtml(config) {
             (state.focusSessionId === node.id ? " focus-origin" : "") +
             (node.isShelf ? " shelf" : "") +
             (node.isRepositoryGroup ? " repository-group" : "") +
+            (node.isOverflowSummary ? " overflow-summary" : "") +
             (node.synthetic ? " synthetic" : ""),
           transform: "translate(" + node.x + " " + node.y + ")",
           tabindex: node.id === state.rovingId ? "0" : "-1",
@@ -1173,13 +1229,15 @@ export function renderConstellationHtml(config) {
           "aria-level": Number(node.depth || 0) + 1,
           "aria-setsize": siblings.get(visualParentId(node) || "__root__")?.length,
           "aria-posinset": siblings.get(visualParentId(node) || "__root__")?.indexOf(node.id) + 1,
-          "aria-expanded": node.isRepositoryGroup
-            ? String(node.groupExpanded)
-            : node.isShelf
-              ? String(node.shelfType === "archived"
-                  ? state.archivedExpanded
-                  : state.completedExpanded)
-              : undefined
+          "aria-expanded": node.isOverflowSummary
+            ? String(node.overflowExpanded)
+            : node.isRepositoryGroup
+              ? String(node.groupExpanded)
+              : node.isShelf
+                ? String(node.shelfType === "archived"
+                    ? state.archivedExpanded
+                    : state.completedExpanded)
+                : undefined
         });
         group.dataset.id = node.id;
         const halo = svgElement("circle", {
@@ -1286,6 +1344,7 @@ export function renderConstellationHtml(config) {
         group.addEventListener("click", () => {
           state.rovingId = node.id;
           if (node.isShelf) toggleShelf(node);
+          else if (node.isOverflowSummary) toggleOverflowSummary(node);
           else if (node.isRepositoryGroup) toggleRepositoryGroup(node);
           else if (!node.synthetic) openInspector(node, true);
         });
@@ -1297,21 +1356,22 @@ export function renderConstellationHtml(config) {
         elements.nodes.appendChild(group);
       });
       updateSelection();
-      if (focusedId) focusNode(focusedId, { reveal: false });
+      if (
+        focusedId &&
+        !focusNode(focusedId, { reveal: false }) &&
+        state.rovingId
+      ) {
+        focusNode(state.rovingId, { reveal: false });
+      }
     }
 
     function handleNodeKey(event, node) {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         if (node.isShelf) toggleShelf(node);
+        else if (node.isOverflowSummary) toggleOverflowSummary(node);
         else if (node.isRepositoryGroup) toggleRepositoryGroup(node);
         else if (!node.synthetic) openInspector(node, true);
-        return;
-      }
-      if (event.key.toLowerCase() === "f" && !node.synthetic) {
-        event.preventDefault();
-        event.stopPropagation();
-        focusLineage(node.id);
         return;
       }
       if (event.key === "PageUp") {
@@ -1366,19 +1426,6 @@ export function renderConstellationHtml(config) {
       }
     }
 
-    function focusNode(id, { scroll = true } = {}) {
-      if (!id) return false;
-      const target = elements.nodes.querySelector(
-        '[data-id="' + CSS.escape(id) + '"]'
-      );
-      if (!target) return false;
-      state.rovingId = id;
-      updateSelection();
-      target.focus({ preventScroll: !scroll });
-      if (scroll) target.scrollIntoView({ block: "nearest", inline: "nearest" });
-      return true;
-    }
-
     function focusLineage(id) {
       const node = state.data?.nodes.find((item) => item.id === id && !item.synthetic);
       if (!node) return;
@@ -1402,6 +1449,7 @@ export function renderConstellationHtml(config) {
       );
       state.search = "";
       state.focusSessionId = "";
+      state.revealedIds.clear();
       state.status = "";
       state.repository = "";
       if (!elements.projectFilter.disabled) state.project = "";
@@ -1412,7 +1460,7 @@ export function renderConstellationHtml(config) {
       render();
       requestAnimationFrame(() =>
         focusNode(state.selectedId || state.data.currentSessionId, {
-          scroll: false
+          reveal: false
         })
       );
       if (changed) elements.live.textContent = "Showing all sessions in this scope.";
@@ -1465,7 +1513,9 @@ export function renderConstellationHtml(config) {
         completedExpanded: state.completedExpanded,
         archivedExpanded: state.archivedExpanded,
         selectedId: state.selectedId,
-        expandedGroupIds: state.expandedGroupIds
+        expandedGroupIds: state.expandedGroupIds,
+        expandedOverflowIds: state.expandedOverflowIds,
+        revealedIds: state.revealedIds
       });
       state.selectedId = resolveVisibleSelection(
         state.layout.nodes,
@@ -1768,7 +1818,10 @@ export function renderConstellationHtml(config) {
           "Lineage focus cleared. Search and filters remain active.";
         return;
       }
-      if (event.key === "/" && !event.target.matches("input, select, button")) {
+      if (
+        isPlainSearchShortcut(event) &&
+        !event.target.matches("input, select, button")
+      ) {
         event.preventDefault();
         elements.filters.classList.add("open");
         elements.filtersToggle.setAttribute("aria-expanded", "true");

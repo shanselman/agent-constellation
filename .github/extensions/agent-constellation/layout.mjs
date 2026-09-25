@@ -2,8 +2,11 @@ const completedShelfId = "__agent_constellation_completed__";
 const archivedShelfId = "__agent_constellation_archived__";
 const filteredProjectRootId = "__agent_constellation_project_scope__";
 const repositoryGroupPrefix = "__agent_constellation_repository_group__:";
+const overflowSummaryPrefix = "__agent_constellation_overflow__:";
 const defaultGroupingThreshold = 30;
 const defaultMinimumGroupSize = 3;
+const defaultVisibleCardBudget = 32;
+const defaultOverflowPageSize = 100;
 
 const acronymLabels = new Map([
     ["ai", "AI"],
@@ -42,13 +45,6 @@ const statusPriority = new Map(
     ].map((status, index) => [status, index])
 );
 
-const attentionStatuses = new Set([
-    "waiting-user",
-    "waiting-plan",
-    "blocked",
-    "failed",
-]);
-
 const statusSearchLabels = new Map([
     ["busy", "busy working"],
     ["waiting-user", "waiting for user attention"],
@@ -75,6 +71,15 @@ export function resolveVisibleSelection(nodes, selectedId, fallbackIds = []) {
     const visibleIds = new Set((nodes ?? []).map((node) => node.id));
     if (selectedId && visibleIds.has(selectedId)) return selectedId;
     return fallbackIds.find((id) => id && visibleIds.has(id));
+}
+
+export function isPlainSearchShortcut(event = {}) {
+    return (
+        event.key === "/" &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey
+    );
 }
 
 export function cardMarkerLayout(cardWidth, cardHeight) {
@@ -220,7 +225,13 @@ export function normalizeSearchQuery(value) {
 export function sessionMatchesSearch(node, query) {
     const normalizedQuery = normalizeSearchQuery(query);
     if (!normalizedQuery) return true;
-    if (!node || node.synthetic || node.isShelf || node.isRepositoryGroup) {
+    if (
+        !node ||
+        node.synthetic ||
+        node.isShelf ||
+        node.isRepositoryGroup ||
+        node.isOverflowSummary
+    ) {
         return false;
     }
     const searchable = normalizeSearchQuery(
@@ -358,6 +369,7 @@ export function buildProtectedRevealSet(
         selectedId,
         directMatchIds = [],
         focusIds = [],
+        revealedIds = [],
     } = {}
 ) {
     const byId = new Map((nodes ?? []).map((node) => [node.id, node]));
@@ -368,13 +380,9 @@ export function buildProtectedRevealSet(
             selectedId,
             ...directMatchIds,
             ...focusIds,
+            ...revealedIds,
         ].filter((id) => byId.has(id))
     );
-    for (const node of byId.values()) {
-        if (!node.synthetic && attentionStatuses.has(node.status)) {
-            protectedIds.add(node.id);
-        }
-    }
     return addVisualAncestry(protectedIds, byId);
 }
 
@@ -619,9 +627,10 @@ function compareNodes(left, right) {
     const shelfDelta =
         left.isShelf === right.isShelf ? 0 : left.isShelf ? -1 : 1;
     const groupDelta =
-        left.isRepositoryGroup === right.isRepositoryGroup
+        Boolean(left.isRepositoryGroup || left.isOverflowSummary) ===
+        Boolean(right.isRepositoryGroup || right.isOverflowSummary)
             ? 0
-            : left.isRepositoryGroup
+            : left.isRepositoryGroup || left.isOverflowSummary
               ? -1
               : 1;
     return (
@@ -740,7 +749,11 @@ function treeMetadata(nodes) {
             };
         }
         const nextLineage = new Set(lineage).add(node.id);
-        let count = node.isShelf ? Number(node.shelfCount) || 1 : 1;
+        let count = node.isShelf
+            ? Number(node.shelfCount) || 1
+            : node.isRepositoryGroup
+              ? Number(node.totalCount) || 1
+              : 1;
         let status = node.status;
         for (const child of children.get(node.id) ?? []) {
             const childMetadata = inspect(child, nextLineage);
@@ -911,6 +924,185 @@ export function groupDirectRepositorySiblings(
     };
 }
 
+export function overflowSummaryId(rootId, pageIndex) {
+    return `${overflowSummaryPrefix}${encodeURIComponent(
+        rootId ?? ""
+    )}:${pageIndex}`;
+}
+
+export function compactOverflowNodes(
+    nodes,
+    rootId,
+    {
+        protectedIds = new Set(),
+        expandedOverflowIds = new Set(),
+        visibleCardBudget = defaultVisibleCardBudget,
+        overflowPageSize = defaultOverflowPageSize,
+    } = {}
+) {
+    const safeBudget = Math.max(4, Number(visibleCardBudget) || defaultVisibleCardBudget);
+    if ((nodes?.length ?? 0) <= safeBudget) {
+        return {
+            nodes: [...(nodes ?? [])],
+            syntheticEdges: [],
+            overflowCount: 0,
+            hiddenSessionCount: 0,
+            visibleCardBudget: safeBudget,
+            budgetExceeded: false,
+        };
+    }
+
+    const metadata = treeMetadata(nodes ?? []);
+    const { byId, children, subtreeSessionCounts, subtreeStatuses } = metadata;
+    const protectedSet = new Set(protectedIds);
+    const expandedSet = new Set(expandedOverflowIds);
+    const candidates = [...byId.values()]
+        .filter((node) => {
+            if (
+                node.id === rootId ||
+                protectedSet.has(node.id) ||
+                node.isShelf ||
+                node.isOverflowSummary
+            ) {
+                return false;
+            }
+            const parentId = visualParentId(node);
+            return !parentId || !byId.has(parentId) || protectedSet.has(parentId);
+        })
+        .sort(compareNodes);
+    if (!candidates.length) {
+        return {
+            nodes: [...byId.values()],
+            syntheticEdges: [],
+            overflowCount: 0,
+            hiddenSessionCount: 0,
+            visibleCardBudget: safeBudget,
+            budgetExceeded: byId.size > safeBudget,
+        };
+    }
+
+    const subtreeIds = new Map();
+    function idsFor(root) {
+        if (subtreeIds.has(root.id)) return subtreeIds.get(root.id);
+        const ids = new Set();
+        const queue = [root];
+        while (queue.length) {
+            const node = queue.shift();
+            if (!node || ids.has(node.id)) continue;
+            ids.add(node.id);
+            queue.push(...(children.get(node.id) ?? []));
+        }
+        subtreeIds.set(root.id, ids);
+        return ids;
+    }
+
+    const allCandidateIds = new Set(
+        candidates.flatMap((candidate) => [...idsFor(candidate)])
+    );
+    const mandatoryCount = [...byId.keys()].filter(
+        (id) => !allCandidateIds.has(id)
+    ).length;
+    const candidateSessionCount = candidates.reduce(
+        (sum, candidate) =>
+            sum + (subtreeSessionCounts.get(candidate.id) ?? 1),
+        0
+    );
+    const availableSummarySlots = Math.max(1, safeBudget - mandatoryCount);
+    const desiredPageCount = Math.min(
+        availableSummarySlots,
+        Math.max(
+            1,
+            Math.ceil(
+                candidateSessionCount /
+                    Math.max(
+                        1,
+                        Number(overflowPageSize) || defaultOverflowPageSize
+                    )
+            )
+        )
+    );
+    const membersPerPage = Math.ceil(candidates.length / desiredPageCount);
+    const pages = Array.from(
+        { length: Math.ceil(candidates.length / membersPerPage) },
+        (_, index) =>
+            candidates.slice(
+                index * membersPerPage,
+                (index + 1) * membersPerPage
+            )
+    );
+
+    const visibleIds = new Set(
+        [...byId.keys()].filter((id) => !allCandidateIds.has(id))
+    );
+    const summaries = [];
+    const syntheticEdges = [];
+    let hiddenSessionCount = 0;
+    let pageStart = 1;
+    pages.forEach((members, pageIndex) => {
+        const id = overflowSummaryId(rootId, pageIndex);
+        const expanded = expandedSet.has(id);
+        const totalCount = members.reduce(
+            (sum, member) =>
+                sum + (subtreeSessionCounts.get(member.id) ?? 1),
+            0
+        );
+        if (expanded) {
+            for (const member of members) {
+                for (const memberId of idsFor(member)) visibleIds.add(memberId);
+            }
+        } else {
+            hiddenSessionCount += totalCount;
+        }
+        const first = pageStart;
+        const last = first + totalCount - 1;
+        pageStart = last + 1;
+        summaries.push({
+            id,
+            parentId: rootId,
+            name: `More sessions ${first}-${last}`,
+            repository: "Overflow page",
+            status: highestPriorityStatus(
+                members.map(
+                    (member) =>
+                        subtreeStatuses.get(member.id) ?? member.status
+                )
+            ),
+            synthetic: true,
+            nodeType: "overflow-summary",
+            isOverflowSummary: true,
+            overflowExpanded: expanded,
+            overflowPage: pageIndex + 1,
+            memberRootCount: members.length,
+            hiddenCount: expanded ? 0 : totalCount,
+            totalCount,
+        });
+        syntheticEdges.push({
+            source: rootId,
+            target: id,
+            kind: "overflow-summary",
+            synthetic: true,
+            isOverflowSummary: true,
+        });
+    });
+
+    const compactedNodes = [
+        ...[...byId.values()].filter((node) => visibleIds.has(node.id)),
+        ...summaries,
+    ];
+    return {
+        nodes: compactedNodes,
+        syntheticEdges,
+        overflowCount: summaries.length,
+        hiddenSessionCount,
+        visibleCardBudget: safeBudget,
+        budgetExceeded:
+            compactedNodes.length > safeBudget &&
+            ![...expandedSet].some((id) =>
+                summaries.some((summary) => summary.id === id)
+            ),
+    };
+}
+
 function childMap(nodes) {
     const byId = new Map(nodes.map((node) => [node.id, node]));
     const children = new Map();
@@ -1053,8 +1245,12 @@ export function layoutResponsiveConstellation(
         archivedExpanded = false,
         selectedId,
         expandedGroupIds = [],
+        expandedOverflowIds = [],
+        revealedIds = [],
         groupingThreshold = defaultGroupingThreshold,
         minimumGroupSize = defaultMinimumGroupSize,
+        visibleCardBudget = defaultVisibleCardBudget,
+        overflowPageSize = defaultOverflowPageSize,
     } = {}
 ) {
     const stageWidth = Math.max(280, Number(width) || 960);
@@ -1065,6 +1261,7 @@ export function layoutResponsiveConstellation(
         selectedId,
         directMatchIds: state.visibility?.directMatchIds,
         focusIds: state.visibility?.focusIds,
+        revealedIds,
     });
     const { visible, completedCount, archivedCount } = visibleTree(
         state.nodes ?? [],
@@ -1080,25 +1277,31 @@ export function layoutResponsiveConstellation(
         groupingThreshold,
         minimumGroupSize,
     });
-    const { children } = childMap(grouped.nodes);
-    const leafCount = grouped.nodes.filter(
+    const compacted = compactOverflowNodes(grouped.nodes, state.rootId, {
+        protectedIds,
+        expandedOverflowIds,
+        visibleCardBudget,
+        overflowPageSize,
+    });
+    const { children } = childMap(compacted.nodes);
+    const leafCount = compacted.nodes.filter(
         (node) => !(children.get(node.id)?.length)
     ).length;
     const orientation = orientationForSize(stageWidth, stageHeight, {
-        nodeCount: grouped.nodes.length,
+        nodeCount: compacted.nodes.length,
         leafCount,
     });
     const layout =
         orientation === "vertical"
             ? verticalLayout(
-                  grouped.nodes,
+                  compacted.nodes,
                   state.rootId,
                   state.currentSessionId,
                   stageWidth,
                   stageHeight
               )
             : horizontalLayout(
-                  grouped.nodes,
+                  compacted.nodes,
                   state.rootId,
                   state.currentSessionId,
                   stageWidth,
@@ -1127,6 +1330,14 @@ export function layoutResponsiveConstellation(
             (edge) => ids.has(edge.source) && ids.has(edge.target)
         )
     );
+    edges.push(
+        ...compacted.syntheticEdges.filter(
+            (edge) => ids.has(edge.source) && ids.has(edge.target)
+        )
+    );
+    const visibleRepositoryHiddenSessionCount = compacted.nodes
+        .filter((node) => node.isRepositoryGroup)
+        .reduce((sum, node) => sum + (Number(node.hiddenCount) || 0), 0);
     return {
         ...layout,
         edges,
@@ -1135,7 +1346,13 @@ export function layoutResponsiveConstellation(
         completedExpanded,
         archivedExpanded,
         groupCount: grouped.groupCount,
-        hiddenSessionCount: grouped.hiddenSessionCount,
+        overflowCount: compacted.overflowCount,
+        hiddenSessionCount:
+            visibleRepositoryHiddenSessionCount + compacted.hiddenSessionCount,
+        repositoryHiddenSessionCount: visibleRepositoryHiddenSessionCount,
+        overflowHiddenSessionCount: compacted.hiddenSessionCount,
+        visibleCardBudget: compacted.visibleCardBudget,
+        budgetExceeded: compacted.budgetExceeded,
         protectedIds: [...protectedIds],
     };
 }
@@ -1188,6 +1405,9 @@ export {
     completedShelfId,
     defaultGroupingThreshold,
     defaultMinimumGroupSize,
+    defaultOverflowPageSize,
+    defaultVisibleCardBudget,
     filteredProjectRootId,
+    overflowSummaryPrefix,
     repositoryGroupPrefix,
 };

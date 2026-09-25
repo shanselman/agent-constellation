@@ -51,7 +51,9 @@ Search uses normalized token matching across sanitized session names, projects, 
 
 Selecting **Focus lineage** keeps the chosen session, its ancestors, and its descendants. Search and focus compose rather than replacing each other, and **Show all** clears local search/focus/status/repository/project selectors while preserving any server-enforced project scope.
 
-At 30 real visible sessions, direct siblings are automatically grouped when at least three share the same repository. A repository summary remains a sibling of the real sessions and uses a synthetic dashed edge; it never replaces or rewrites recorded lineage. Expanding a group persists across rerenders. Search matches, the selected/current sessions, waiting/blocked/failed sessions, and their visual ancestry remain explicit even when the rest of their repository group is collapsed.
+At 30 real visible sessions, direct siblings are automatically grouped when at least three share the same repository. A repository summary remains a sibling of the real sessions and uses a synthetic dashed edge; it never replaces or rewrites recorded lineage. Expanding a group persists across rerenders.
+
+A second deterministic overflow stage enforces a default budget of 32 visible cards regardless of repository distribution, including unique repositories and **No project** Home chats. Typed **More sessions** pages use synthetic edges and can be deliberately expanded. Current/selected sessions, active search or lineage-focus targets, explicitly revealed targets, and their visual ancestry remain real cards; waiting/blocked/failed status alone does not bypass compaction.
 
 ### Responsive side-pane layout
 
@@ -195,9 +197,9 @@ For an explicit local-model UI demonstration:
 - **Arrow keys** move focus directionally between session cards.
 - **Page Up / Page Down** move to the visual parent or first visible child.
 - **Home / Ctrl+Home** move keyboard focus to the current session or visible root.
-- **F** focuses the lineage of the currently focused real session.
 - **Focus lineage** in the inspector shows the selected session with its ancestors and descendants.
 - **Click or press Enter/Space** on a repository summary to expand or collapse that direct-sibling group.
+- **Click or press Enter/Space** on a **More sessions** page to expand or collapse its deterministic overflow bucket.
 - **Click the Completed or Archived shelf** to expand or collapse those descendants.
 - **Drag empty canvas space** to pan.
 - **Pinch** with two touch or pointer contacts to zoom and pan around the moving midpoint.
@@ -221,8 +223,8 @@ The installable extension lives entirely in [`.github/extensions/agent-constella
 |---|---|
 | `extension.mjs` | Declares the canvas, open schema, actions, and lifecycle with the Copilot SDK. |
 | `data.mjs` | Reads local sources, derives statuses and relationships, sanitizes project/session metadata, normalizes tree/all scopes, filters state, and isolates demo decoration. |
-| `layout.mjs` | Produces deterministic search/focus visibility, visual-ancestry protection, direct-sibling repository groups, bounded-stack/horizontal layouts, density-aware orientation, attention-first ordering, completed/archived shelves, shared card-marker slots, meaningful-change summaries, explicit synthetic containment, model labels, fit scaling, and pinch transforms. |
-| `renderer.mjs` | Generates the accessible, right-pane-first, theme-aware canvas UI with persistent repository expansion, roving keyboard focus, search/focus reset controls, and per-view scope/project/repository controls. |
+| `layout.mjs` | Produces deterministic search/focus visibility, explicit-target ancestry protection, direct-sibling repository groups, hard-budget overflow pages, bounded-stack/horizontal layouts, density-aware orientation, attention-first ordering, completed/archived shelves, shared card-marker slots, meaningful-change summaries, explicit synthetic containment, model labels, fit scaling, and pinch transforms. |
+| `renderer.mjs` | Generates the accessible, right-pane-first, theme-aware canvas UI with persistent repository/overflow expansion, hidden-target reveal, roving keyboard focus, search/focus reset controls, and per-view scope/project/repository controls. |
 | `server.mjs` | Hosts the token-protected loopback page, JSON state, per-instance scope endpoint, refresh endpoint, and SSE stream. |
 | `agent-constellation.test.mjs` | Covers multi-project collection, sanitization, identity labels, real/synthetic relationships, scope isolation, responsive layout, gestures, local-model semantics, renderer accessibility, and loopback protections. |
 | `copilot-extension.json` | Identifies the folder as a shareable/installable Copilot extension. |
@@ -247,6 +249,7 @@ The extension tolerates missing tables, columns, databases, and event files. It 
 - Statuses are inferred from local app state and recent event metadata; unavailable sources reduce precision.
 - Search is normalized token-substring matching rather than fuzzy or full-text search.
 - Repository grouping is deliberately local to direct siblings and existing repository labels; it does not infer relationships or globally optimize whitespace.
+- Overflow pages are deterministic bounded summaries, not inferred parents; expanding them can intentionally exceed the default card/height budget.
 - Local-model classification requires explicit provider or runtime-prefixed model metadata.
 - The canvas is a local operational view, not a durable historical analytics store.
 - Canvas extensions require a GitHub Copilot build with extension canvas support.
