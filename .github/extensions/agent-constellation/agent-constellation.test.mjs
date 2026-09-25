@@ -7,26 +7,32 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import {
     CANVAS_OPEN_INPUT_SCHEMA,
+    FILTER_PROPERTIES,
     collectConstellationState,
     decorateConstellationForDemo,
     filterConstellationState,
     isLocalModelMetadata,
     layoutConstellation,
     normalizeConstellation,
+    overviewRootId,
     stateFingerprint,
 } from "./data.mjs";
 import {
     applyPinchGesture,
     completedShelfId,
+    filterConstellationView,
+    filteredProjectRootId,
     fitWidthScale,
     formatModelLabel,
     layoutResponsiveConstellation,
     orientationForSize,
+    resolveProjectFilter,
 } from "./layout.mjs";
 import { renderConstellationHtml } from "./renderer.mjs";
 import {
     closeConstellationServer,
     getOrCreateConstellationServer,
+    refreshConstellationServer,
 } from "./server.mjs";
 
 const extensionDir = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, "$1"));
@@ -86,7 +92,7 @@ function readFirstSseState(url, cookie) {
     });
 }
 
-function fixtureState() {
+function fixtureState(scope = "tree") {
     return normalizeConstellation(
         [
             {
@@ -116,7 +122,120 @@ function fixtureState() {
             },
         ],
         "root-session",
-        { appDatabase: true, sessionStore: true, eventMetadata: true }
+        {
+            appDatabase: true,
+            sessionStore: true,
+            eventMetadata: true,
+            relationships: true,
+            projects: true,
+            scope,
+        }
+    );
+}
+
+function multiProjectFixtureState(
+    scope = "all",
+    { projectAName = "Project A", includeProjectA = true, duplicateProjectAName = false } = {}
+) {
+    const nodes = [
+        {
+            id: "home",
+            name: "Home chat",
+            projectName: "My Copilot",
+            repository: "No project",
+            sessionType: "general_chat",
+            isHomeChat: true,
+            status: "idle",
+        },
+        {
+            id: "project-b-root",
+            name: "Project B root",
+            projectId: "project-b",
+            projectName: duplicateProjectAName ? projectAName : "Project B",
+            repository: "octo/b",
+            status: "completed",
+        },
+    ];
+    if (includeProjectA) {
+        nodes.push(
+            {
+                id: "project-a-root",
+                parentId: "project-b-root",
+                name: "Project A root",
+                projectId: "project-a",
+                projectName: projectAName,
+                repository: "octo/a",
+                status: "busy",
+            },
+            {
+                id: "project-a-child",
+                parentId: "project-a-root",
+                name: "Project A child",
+                projectId: "project-a",
+                projectName: projectAName,
+                repository: "octo/a",
+                status: "waiting-user",
+            }
+        );
+    }
+    return normalizeConstellation(nodes, "home", {
+        appDatabase: true,
+        sessionStore: true,
+        eventMetadata: true,
+        relationships: true,
+        projects: true,
+        scope,
+    });
+}
+
+function crossProjectFixtureState(scope = "tree") {
+    return normalizeConstellation(
+        [
+            {
+                id: "foreign-root",
+                name: "Foreign coordinator",
+                projectId: "project-b",
+                projectName: "Project B",
+                repository: "octo/b",
+                status: "idle",
+            },
+            {
+                id: "a-waiting",
+                parentId: "foreign-root",
+                name: "Waiting child",
+                projectId: "project-a",
+                projectName: "Project A",
+                repository: "octo/a",
+                status: "waiting-user",
+            },
+            {
+                id: "a-busy",
+                parentId: "a-waiting",
+                name: "Busy grandchild",
+                projectId: "project-a",
+                projectName: "Project A",
+                repository: "octo/a",
+                status: "busy",
+            },
+            {
+                id: "a-idle",
+                parentId: "foreign-root",
+                name: "Idle sibling",
+                projectId: "project-a",
+                projectName: "Project A",
+                repository: "octo/a",
+                status: "idle",
+            },
+        ],
+        "a-busy",
+        {
+            appDatabase: true,
+            sessionStore: true,
+            eventMetadata: true,
+            relationships: true,
+            projects: true,
+            scope,
+        }
     );
 }
 
@@ -134,8 +253,18 @@ test("normalization sanitizes metadata and layout is deterministic", () => {
     assert.deepEqual(
         [...first.edges].sort((left, right) => left.target.localeCompare(right.target)),
         [
-            { source: "root-session", target: "busy-child" },
-            { source: "busy-child", target: "waiting-grandchild" },
+            {
+                source: "root-session",
+                target: "busy-child",
+                kind: "parent-child",
+                synthetic: false,
+            },
+            {
+                source: "busy-child",
+                target: "waiting-grandchild",
+                kind: "parent-child",
+                synthetic: false,
+            },
         ]
     );
 
@@ -245,10 +374,16 @@ test("demo decoration clones state and changes only the current session", () => 
     assert.notEqual(stateFingerprint(source), stateFingerprint(decorated));
 });
 
-test("canvas open schema accepts only optional demo local model input", () => {
+test("canvas open schema adds contextual scope and project inputs", () => {
     assert.deepEqual(CANVAS_OPEN_INPUT_SCHEMA.properties.demoLocalModel, {
         type: "boolean",
     });
+    assert.deepEqual(CANVAS_OPEN_INPUT_SCHEMA.properties.scope, {
+        type: "string",
+        enum: ["tree", "all"],
+    });
+    assert.equal(CANVAS_OPEN_INPUT_SCHEMA.properties.project.type, "string");
+    assert.equal(FILTER_PROPERTIES.project.type, "string");
     assert.equal(CANVAS_OPEN_INPUT_SCHEMA.additionalProperties, false);
 });
 
@@ -287,6 +422,12 @@ test("collector remains compatible when provider metadata is unavailable", () =>
         assert.equal(current.provider, undefined);
         assert.equal(current.model, "llama-3.3");
         assert.equal(current.isLocalModel, false);
+        assert.equal(current.name.startsWith("Standalone session"), true);
+        assert.equal(current.repository, "No project");
+        assert.equal(state.source.relationships, "partial");
+        assert.equal(state.source.projects, "partial");
+        assert.match(state.source.limitations.join(" "), /relationships may be incomplete/i);
+        assert.match(state.source.limitations.join(" "), /Project grouping metadata may be incomplete/i);
     } finally {
         app.close();
         rmSync(scratch, { recursive: true, force: true });
@@ -355,10 +496,349 @@ test("current grandchild resolves topmost root and includes sibling descendants"
     assert.equal(filtered.currentSessionId, "current-grandchild");
 
     const noMatches = filterConstellationState(first, { status: "failed" });
+    assert.deepEqual(noMatches.nodes, []);
+    assert.deepEqual(noMatches.edges, []);
+});
+
+test("all scope preserves real lineage and groups independent roots synthetically", () => {
+    const rawNodes = [
+        {
+            id: "home",
+            name: "Home chat",
+            projectName: "My Copilot",
+            repository: "No project",
+            sessionType: "general_chat",
+            isHomeChat: true,
+            status: "idle",
+        },
+        {
+            id: "project-a-root",
+            name: "Project A",
+            projectId: "project-a",
+            projectName: "Project A",
+            repository: "octo/a",
+            status: "busy",
+        },
+        {
+            id: "project-a-child",
+            parentId: "project-a-root",
+            name: "Project A child",
+            projectId: "project-a",
+            projectName: "Project A",
+            repository: "octo/a",
+            status: "waiting-user",
+        },
+        {
+            id: "project-b-root",
+            name: "Project B",
+            projectId: "project-b",
+            projectName: "Project B",
+            repository: "octo/b",
+            status: "completed",
+        },
+        {
+            id: "standalone-cli",
+            name: "Standalone session standalone",
+            projectName: "No project",
+            repository: "No project",
+            sessionType: "cli_session",
+            status: "idle",
+        },
+        {
+            id: "orphan",
+            parentId: "missing-parent",
+            name: "Orphan",
+            projectName: "No project",
+            repository: "No project",
+            status: "failed",
+        },
+    ];
+
+    const tree = normalizeConstellation(rawNodes, "project-a-child");
+    assert.equal(tree.diagnostics.requestedScope, "tree");
+    assert.equal(tree.diagnostics.effectiveScope, "tree");
     assert.deepEqual(
-        noMatches.nodes.map((node) => node.id).sort(),
-        ["current-grandchild", "current-parent", "root"]
+        tree.nodes.map((node) => node.id).sort(),
+        ["project-a-child", "project-a-root"]
     );
+
+    const all = normalizeConstellation(rawNodes, "home", {
+        scope: "all",
+        appDatabase: true,
+        relationships: true,
+        projects: true,
+    });
+    assert.equal(all.rootId, overviewRootId);
+    assert.equal(all.nodes.length, rawNodes.length + 1);
+    assert.equal(all.diagnostics.selectedRealSessionCount, rawNodes.length);
+    assert.equal(all.diagnostics.totalDiscoveredSessionCount, rawNodes.length);
+    assert.equal(all.diagnostics.independentRealRootCount, 5);
+    assert.equal(Object.values(all.counts).reduce((sum, count) => sum + count, 0), rawNodes.length);
+    assert.equal(all.nodes.find((node) => node.id === overviewRootId).synthetic, true);
+    assert.equal(all.nodes.find((node) => node.id === "project-a-child").parentId, "project-a-root");
+    assert.equal(all.nodes.find((node) => node.id === "orphan").parentId, "missing-parent");
+    assert.equal(all.nodes.find((node) => node.id === "orphan").syntheticParentId, overviewRootId);
+    assert.deepEqual(
+        all.edges.find((edge) => edge.target === "project-a-child"),
+        {
+            source: "project-a-root",
+            target: "project-a-child",
+            kind: "parent-child",
+            synthetic: false,
+        }
+    );
+    assert.deepEqual(
+        all.edges.find((edge) => edge.target === "project-b-root"),
+        {
+            source: overviewRootId,
+            target: "project-b-root",
+            kind: "containment",
+            synthetic: true,
+        }
+    );
+
+    const projectFiltered = filterConstellationState(all, { project: "project-a" });
+    assert.deepEqual(
+        projectFiltered.nodes.map((node) => node.id).sort(),
+        [overviewRootId, "project-a-child", "project-a-root"].sort()
+    );
+    const repositoryFiltered = filterConstellationState(all, { repository: "octo/b" });
+    assert.deepEqual(
+        repositoryFiltered.nodes.map((node) => node.id).sort(),
+        [overviewRootId, "project-b-root"].sort()
+    );
+    assert.equal(
+        all.nodes.find((node) => node.id === "standalone-cli").isHomeChat,
+        false
+    );
+    assert.equal(
+        all.nodes.find((node) => node.id === "standalone-cli").name.startsWith("Home chat"),
+        false
+    );
+});
+
+test("project filters resolve IDs and names case-insensitively and fail closed", () => {
+    const state = multiProjectFixtureState();
+    const byId = filterConstellationState(state, { project: "project-a" });
+    const byName = filterConstellationState(state, { project: "Project A" });
+    const byCaseInsensitiveName = filterConstellationView(state, {
+        project: "pRoJeCt A",
+    });
+    for (const filtered of [byId, byName, byCaseInsensitiveName]) {
+        assert.deepEqual(
+            filtered.nodes.filter((node) => !node.synthetic).map((node) => node.id).sort(),
+            ["project-a-child", "project-a-root"]
+        );
+        assert.equal(filtered.diagnostics.selectedRealSessionCount, 2);
+        assert.equal(filtered.diagnostics.projectFilter.status, "resolved");
+        assert.equal(
+            filtered.diagnostics.projectFilter.effectiveProjectId,
+            "project-a"
+        );
+        const reattached = filtered.nodes.find(
+            (node) => node.id === "project-a-root"
+        );
+        assert.equal(reattached.parentId, "project-b-root");
+        assert.equal(reattached.syntheticParentId, overviewRootId);
+        assert.deepEqual(
+            filtered.edges.find((edge) => edge.target === "project-a-root"),
+            {
+                source: overviewRootId,
+                target: "project-a-root",
+                kind: "containment",
+                synthetic: true,
+            }
+        );
+    }
+
+    const unknown = filterConstellationState(state, {
+        project: "deleted-project",
+    });
+    assert.deepEqual(unknown.nodes, []);
+    assert.deepEqual(unknown.edges, []);
+    assert.equal(unknown.diagnostics.selectedRealSessionCount, 0);
+    assert.equal(unknown.diagnostics.projectFilter.status, "unknown");
+
+    const ambiguousState = multiProjectFixtureState("all", {
+        duplicateProjectAName: true,
+    });
+    const ambiguous = filterConstellationState(ambiguousState, {
+        project: "Project A",
+    });
+    assert.deepEqual(ambiguous.nodes, []);
+    assert.equal(ambiguous.diagnostics.projectFilter.status, "ambiguous");
+    const explicitId = filterConstellationState(ambiguousState, {
+        project: "project-b",
+    });
+    assert.deepEqual(
+        explicitId.nodes.filter((node) => !node.synthetic).map((node) => node.id),
+        ["project-b-root"]
+    );
+
+    assert.deepEqual(resolveProjectFilter(state.projects, "PROJECT-A"), {
+        requested: "PROJECT-A",
+        status: "resolved",
+        matched: true,
+        id: "project-a",
+        name: "Project A",
+        value: "project-a",
+    });
+    assert.equal(
+        resolveProjectFilter(ambiguousState.projects, "project a").status,
+        "ambiguous"
+    );
+});
+
+test("project filtering reattaches cross-project descendants for every layout", () => {
+    for (const scope of ["tree", "all"]) {
+        const source = crossProjectFixtureState(scope);
+        const filtered = filterConstellationState(source, {
+            project: "Project A",
+        });
+        const expectedRootId =
+            scope === "all" ? overviewRootId : filteredProjectRootId;
+        assert.equal(filtered.rootId, expectedRootId);
+        assert.equal(filtered.currentSessionId, "a-busy");
+        assert.equal(filtered.diagnostics.selectedRealSessionCount, 3);
+        assert.equal(filtered.diagnostics.independentRealRootCount, 2);
+        assert.equal(
+            Object.values(filtered.counts).reduce((sum, count) => sum + count, 0),
+            3
+        );
+        assert.equal(filtered.counts["waiting-user"], 1);
+        assert.equal(
+            filtered.nodes.some((node) => node.id === "foreign-root"),
+            false
+        );
+        for (const id of ["a-waiting", "a-idle"]) {
+            const node = filtered.nodes.find((item) => item.id === id);
+            assert.equal(node.parentId, "foreign-root");
+            assert.equal(node.syntheticParentId, expectedRootId);
+            assert.deepEqual(
+                filtered.edges.find((edge) => edge.target === id),
+                {
+                    source: expectedRootId,
+                    target: id,
+                    kind: "containment",
+                    synthetic: true,
+                }
+            );
+        }
+        assert.deepEqual(
+            filtered.edges.find((edge) => edge.target === "a-busy"),
+            {
+                source: "a-waiting",
+                target: "a-busy",
+                kind: "parent-child",
+                synthetic: false,
+            }
+        );
+
+        for (const [width, height, orientation] of [
+            [1200, 700, "horizontal"],
+            [420, 900, "vertical"],
+        ]) {
+            const layout = layoutResponsiveConstellation(filtered, {
+                width,
+                height,
+                completedExpanded: true,
+            });
+            assert.equal(layout.orientation, orientation);
+            assert.equal(
+                layout.nodes.filter((node) => !node.synthetic).length,
+                filtered.diagnostics.selectedRealSessionCount
+            );
+            assert.equal(
+                layout.nodes.some(
+                    (node) => node.id === "a-waiting" && node.status === "waiting-user"
+                ),
+                true
+            );
+            assert.equal(
+                layout.nodes.some((node) => node.id === "foreign-root"),
+                false
+            );
+        }
+    }
+});
+
+test("cross-project project scopes remain rooted across refresh and reopen", async () => {
+    const servers = new Map();
+    const provider = async ({ scope } = {}) => crossProjectFixtureState(scope);
+    const options = (scope) => ({
+        dataProvider: provider,
+        initialScope: scope,
+        initialProject: "Project A",
+        pollIntervalMs: 60_000,
+    });
+    try {
+        const [tree, all] = await Promise.all([
+            getOrCreateConstellationServer(servers, "cross-tree", options("tree")),
+            getOrCreateConstellationServer(servers, "cross-all", options("all")),
+        ]);
+        for (const entry of [tree, all]) {
+            assert.equal(entry.state.diagnostics.selectedRealSessionCount, 3);
+            assert.equal(
+                entry.state.nodes.some((node) => node.id === "foreign-root"),
+                false
+            );
+            const horizontal = layoutResponsiveConstellation(entry.state, {
+                width: 1200,
+                height: 700,
+            });
+            assert.equal(
+                horizontal.nodes.filter((node) => !node.synthetic).length,
+                3
+            );
+            assert.equal(
+                horizontal.nodes.some(
+                    (node) => node.id === "a-waiting" && node.status === "waiting-user"
+                ),
+                true
+            );
+        }
+
+        await Promise.all([
+            refreshConstellationServer(tree),
+            refreshConstellationServer(all),
+        ]);
+        assert.equal(tree.state.diagnostics.selectedRealSessionCount, 3);
+        assert.equal(all.state.diagnostics.selectedRealSessionCount, 3);
+
+        const [treeReopened, allReopened] = await Promise.all([
+            getOrCreateConstellationServer(servers, "cross-tree", {
+                ...options("tree"),
+                initialProject: "",
+            }),
+            getOrCreateConstellationServer(servers, "cross-all", {
+                ...options("all"),
+                initialProject: "",
+            }),
+        ]);
+        assert.equal(treeReopened, tree);
+        assert.equal(allReopened, all);
+        assert.equal(treeReopened.projectScope.id, "project-a");
+        assert.equal(allReopened.projectScope.id, "project-a");
+        assert.equal(
+            layoutResponsiveConstellation(treeReopened.state, {
+                width: 1200,
+                height: 700,
+            }).nodes.filter((node) => !node.synthetic).length,
+            3
+        );
+        assert.equal(
+            layoutResponsiveConstellation(allReopened.state, {
+                width: 1200,
+                height: 700,
+            }).nodes.filter((node) => !node.synthetic).length,
+            3
+        );
+    } finally {
+        await Promise.all([
+            closeConstellationServer(servers, "cross-tree"),
+            closeConstellationServer(servers, "cross-all"),
+        ]);
+    }
 });
 
 test("responsive layout uses vertical mission-control columns and collapses completed agents", () => {
@@ -678,10 +1158,127 @@ test("collector uses app relationships and gracefully combines safe fallbacks", 
     }
 });
 
+test("collector all scope labels home chat only from positive session metadata", () => {
+    const scratch = path.join(extensionDir, `.test-artifacts-${randomUUID()}`);
+    const appPath = path.join(scratch, "data.db");
+    mkdirSync(scratch, { recursive: true });
+    const app = new DatabaseSync(appPath);
+    try {
+        app.exec(`
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, title TEXT, session_type TEXT, mode TEXT,
+                model TEXT, reasoning_effort TEXT, provider_id TEXT,
+                is_running INTEGER, was_interrupted INTEGER, created_at TEXT,
+                updated_at TEXT, archived_at TEXT, forked_from_session_id TEXT
+            );
+            CREATE TABLE workspaces (
+                id TEXT PRIMARY KEY, project_id TEXT, branch TEXT, name TEXT,
+                session_id TEXT, archived_at TEXT, creator_session_id TEXT,
+                coordinating_creator_session_id TEXT, source_pr_repo_full_name TEXT,
+                source_pr_number INTEGER, source_issue_repo_full_name TEXT,
+                source_issue_number INTEGER, created_pr_repo_full_name TEXT,
+                created_pr_number INTEGER
+            );
+            CREATE TABLE workspace_parent_links (
+                child_workspace_id TEXT, parent_workspace_id TEXT, creator_session_id TEXT
+            );
+            CREATE TABLE projects (
+                id TEXT PRIMARY KEY, name TEXT, github_owner TEXT, github_repo TEXT, main_repo_path TEXT
+            );
+        `);
+        const insertSession = app.prepare(
+            "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        );
+        for (const session of [
+            ["home", "Sensitive home prompt", "general_chat", null],
+            ["cli", "Sensitive CLI prompt", "cli_session", null],
+            ["a-root", "Sensitive A prompt", "project", null],
+            ["a-child", "Sensitive child prompt", "project", "a-root"],
+            ["b-root", "Sensitive B prompt", "project", null],
+        ]) {
+            insertSession.run(
+                session[0],
+                session[1],
+                session[2],
+                "interactive",
+                "auto",
+                null,
+                "github",
+                0,
+                0,
+                "2026-09-25T16:00:00.000Z",
+                "2026-09-25T16:01:00.000Z",
+                null,
+                session[3]
+            );
+        }
+        app.prepare("INSERT INTO projects VALUES (?, ?, ?, ?, ?)").run(
+            "project-a", "Project A", "octo", "a", "D:\\repos\\a"
+        );
+        app.prepare("INSERT INTO projects VALUES (?, ?, ?, ?, ?)").run(
+            "project-b", "Project B", "octo", "b", "D:\\repos\\b"
+        );
+        const insertWorkspace = app.prepare(
+            "INSERT INTO workspaces VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        );
+        insertWorkspace.run(
+            "a-workspace", "project-a", "main", "Project A root", "a-root",
+            null, null, null, null, null, null, null, null, null
+        );
+        insertWorkspace.run(
+            "a-child-workspace", "project-a", "feature", "Project A child", "a-child",
+            null, "a-root", "a-root", null, null, null, null, null, null
+        );
+        insertWorkspace.run(
+            "b-workspace", "project-b", "main", "Project B root", "b-root",
+            null, null, null, null, null, null, null, null, null
+        );
+        app.prepare("INSERT INTO workspace_parent_links VALUES (?, ?, ?)").run(
+            "a-child-workspace", "a-workspace", "a-root"
+        );
+        app.close();
+
+        const state = collectConstellationState({
+            currentSessionId: "home",
+            scope: "all",
+            appDatabasePath: appPath,
+            sessionStorePath: path.join(scratch, "missing-store.db"),
+            sessionStateRoot: path.join(scratch, "session-state"),
+        });
+        assert.equal(state.diagnostics.selectedRealSessionCount, 5);
+        assert.equal(state.diagnostics.independentRealRootCount, 4);
+        const home = state.nodes.find((node) => node.id === "home");
+        assert.equal(home.name, "Home chat");
+        assert.equal(home.projectName, "My Copilot");
+        assert.equal(home.repository, "No project");
+        assert.equal(home.isHomeChat, true);
+        const cli = state.nodes.find((node) => node.id === "cli");
+        assert.equal(cli.name, "Standalone session cli");
+        assert.equal(cli.projectName, "No project");
+        assert.equal(cli.repository, "No project");
+        assert.equal(cli.isHomeChat, false);
+        assert.equal(
+            state.nodes.find((node) => node.id === "a-child").parentId,
+            "a-root"
+        );
+        assert.equal(
+            state.nodes.find((node) => node.id === "b-root").projectName,
+            "Project B"
+        );
+        assert.equal(JSON.stringify(state).includes("Sensitive"), false);
+        assert.equal(JSON.stringify(state).includes("D:\\repos"), false);
+    } finally {
+        try {
+            app.close();
+        } catch {}
+        rmSync(scratch, { recursive: true, force: true });
+    }
+});
+
 test("loopback server rejects unsafe requests and cleans up idempotently", async () => {
     const servers = new Map();
     const options = {
-        dataProvider: async () => fixtureState(),
+        dataProvider: async ({ scope } = {}) => fixtureState(scope),
         pollIntervalMs: 60_000,
     };
     let first;
@@ -712,6 +1309,7 @@ test("loopback server rejects unsafe requests and cleans up idempotently", async
         assert.equal(stateResponse.status, 200);
         const normalState = await stateResponse.json();
         assert.equal(normalState.nodes.length, 3);
+        assert.equal(normalState.diagnostics.effectiveScope, "tree");
         assert.equal(
             normalState.nodes.find((node) => node.id === normalState.currentSessionId).isLocalModel,
             false
@@ -766,6 +1364,24 @@ test("loopback server rejects unsafe requests and cleans up idempotently", async
         });
         assert.equal(invalidBody.status, 400);
 
+        const allScope = await fetch(`${first.url}scope`, {
+            method: "POST",
+            headers: { cookie, "content-type": "application/json" },
+            body: JSON.stringify({ scope: "all" }),
+        });
+        assert.equal(allScope.status, 200);
+        const allState = await allScope.json();
+        assert.equal(allState.diagnostics.effectiveScope, "all");
+        assert.equal(allState.nodes.some((node) => node.id === overviewRootId), true);
+        assert.equal(first.scope, "all");
+
+        const invalidScope = await fetch(`${first.url}scope`, {
+            method: "POST",
+            headers: { cookie, "content-type": "application/json" },
+            body: JSON.stringify({ scope: "everything" }),
+        });
+        assert.equal(invalidScope.status, 400);
+
         const unsafeHost = await rawRequest(`${first.url}state`, {
             headers: { cookie, Host: "example.invalid" },
         });
@@ -779,15 +1395,205 @@ test("loopback server rejects unsafe requests and cleans up idempotently", async
     assert.equal(await closeConstellationServer(servers, "instance-one"), false);
 });
 
+test("simultaneous canvas instances keep scope and filters isolated across refresh and reload", async () => {
+    const servers = new Map();
+    let projectAName = "Project A";
+    let includeProjectA = true;
+    const provider = async ({ scope } = {}) =>
+        multiProjectFixtureState(scope, { projectAName, includeProjectA });
+    const homeOptions = {
+        dataProvider: provider,
+        initialScope: "all",
+        pollIntervalMs: 60_000,
+    };
+    const projectOptions = {
+        dataProvider: provider,
+        initialScope: "all",
+        initialProject: "pRoJeCt A",
+        initialRepository: "octo/a",
+        pollIntervalMs: 60_000,
+    };
+    const unknownProjectOptions = {
+        dataProvider: provider,
+        initialScope: "all",
+        initialProject: "deleted-project",
+        pollIntervalMs: 60_000,
+    };
+    const treeOptions = {
+        dataProvider: provider,
+        pollIntervalMs: 60_000,
+    };
+    try {
+        const [home, project, unknownProject, tree] = await Promise.all([
+            getOrCreateConstellationServer(servers, "home-view", homeOptions),
+            getOrCreateConstellationServer(servers, "project-view", projectOptions),
+            getOrCreateConstellationServer(
+                servers,
+                "unknown-project-view",
+                unknownProjectOptions
+            ),
+            getOrCreateConstellationServer(servers, "tree-view", treeOptions),
+        ]);
+        assert.equal(home.scope, "all");
+        assert.equal(project.scope, "all");
+        assert.equal(project.projectScope.id, "project-a");
+        assert.equal(project.projectScope.status, "resolved");
+        assert.equal(project.state.currentSessionId, undefined);
+        assert.deepEqual(
+            project.state.nodes
+                .filter((node) => !node.synthetic)
+                .map((node) => node.id)
+                .sort(),
+            ["project-a-child", "project-a-root"]
+        );
+        assert.equal(
+            project.state.nodes.some((node) => node.id === "project-b-root"),
+            false
+        );
+        assert.equal(
+            layoutResponsiveConstellation(project.state, {
+                width: 1200,
+                height: 700,
+            }).nodes.filter((node) => !node.synthetic).length,
+            project.state.diagnostics.selectedRealSessionCount
+        );
+        assert.equal(unknownProject.state.nodes.length, 0);
+        assert.equal(unknownProject.projectScope.status, "unknown");
+        assert.equal(tree.scope, "tree");
+
+        const reopenedHome = await getOrCreateConstellationServer(
+            servers,
+            "home-view",
+            { ...homeOptions, initialScope: "tree" }
+        );
+        const reopenedProject = await getOrCreateConstellationServer(
+            servers,
+            "project-view",
+            { ...projectOptions, initialProject: "" }
+        );
+        assert.equal(reopenedHome, home);
+        assert.equal(reopenedHome.scope, "all");
+        assert.equal(reopenedProject, project);
+        assert.equal(reopenedProject.projectScope.id, "project-a");
+
+        const homeBootstrap = await fetch(home.openUrl, { redirect: "manual" });
+        const homeCookie = homeBootstrap.headers.get("set-cookie").split(";")[0];
+        const changed = await fetch(`${home.url}scope`, {
+            method: "POST",
+            headers: { cookie: homeCookie, "content-type": "application/json" },
+            body: JSON.stringify({ scope: "tree" }),
+        });
+        assert.equal(changed.status, 200);
+        assert.equal(home.scope, "tree");
+        projectAName = "Project A Renamed";
+        await Promise.all([
+            refreshConstellationServer(project),
+            refreshConstellationServer(unknownProject),
+            refreshConstellationServer(tree),
+        ]);
+        assert.equal(project.scope, "all");
+        assert.equal(project.state.diagnostics.effectiveScope, "all");
+        assert.equal(project.projectScope.id, "project-a");
+        assert.equal(project.projectScope.name, "Project A Renamed");
+        assert.equal(project.state.diagnostics.selectedRealSessionCount, 2);
+        assert.equal(
+            layoutResponsiveConstellation(project.state, {
+                width: 1200,
+                height: 700,
+            }).nodes.filter((node) => !node.synthetic).length,
+            2
+        );
+        assert.equal(unknownProject.state.nodes.length, 0);
+        assert.equal(tree.scope, "tree");
+        assert.equal(tree.state.diagnostics.effectiveScope, "tree");
+
+        includeProjectA = false;
+        await refreshConstellationServer(project);
+        assert.equal(project.state.nodes.length, 0);
+        assert.equal(project.projectScope.id, "project-a");
+        assert.equal(project.projectScope.status, "unknown");
+
+        includeProjectA = true;
+        await refreshConstellationServer(project);
+        assert.equal(project.state.diagnostics.selectedRealSessionCount, 2);
+        assert.equal(project.projectScope.id, "project-a");
+        assert.equal(
+            project.state.nodes.some((node) => node.id === "project-b-root"),
+            false
+        );
+
+        const projectBootstrap = await fetch(project.openUrl, { redirect: "manual" });
+        const projectCookie = projectBootstrap.headers.get("set-cookie").split(";")[0];
+        const projectPage = await fetch(project.url, {
+            headers: { cookie: projectCookie },
+        });
+        const projectHtml = await projectPage.text();
+        assert.match(projectHtml, /"initialProject":"project-a"/);
+        assert.match(projectHtml, /"initialRepository":"octo\/a"/);
+    } finally {
+        await Promise.all([
+            closeConstellationServer(servers, "home-view"),
+            closeConstellationServer(servers, "project-view"),
+            closeConstellationServer(servers, "unknown-project-view"),
+            closeConstellationServer(servers, "tree-view"),
+        ]);
+    }
+
+    projectAName = "Project A";
+    includeProjectA = true;
+    const reloadedServers = new Map();
+    try {
+        const [homeReloaded, projectReloaded, unknownReloaded, treeReloaded] =
+            await Promise.all([
+            getOrCreateConstellationServer(reloadedServers, "home-view", homeOptions),
+            getOrCreateConstellationServer(reloadedServers, "project-view", projectOptions),
+            getOrCreateConstellationServer(
+                reloadedServers,
+                "unknown-project-view",
+                unknownProjectOptions
+            ),
+            getOrCreateConstellationServer(reloadedServers, "tree-view", treeOptions),
+        ]);
+        assert.equal(homeReloaded.scope, "all");
+        assert.equal(projectReloaded.scope, "all");
+        assert.equal(projectReloaded.projectScope.id, "project-a");
+        assert.equal(projectReloaded.state.diagnostics.selectedRealSessionCount, 2);
+        assert.equal(unknownReloaded.state.nodes.length, 0);
+        assert.equal(treeReloaded.scope, "tree");
+    } finally {
+        await Promise.all([
+            closeConstellationServer(reloadedServers, "home-view"),
+            closeConstellationServer(reloadedServers, "project-view"),
+            closeConstellationServer(reloadedServers, "unknown-project-view"),
+            closeConstellationServer(reloadedServers, "tree-view"),
+        ]);
+    }
+});
+
 test("renderer exposes accessibility and reduced-motion affordances", () => {
     const html = renderConstellationHtml({
         stateUrl: "http://127.0.0.1/state",
         eventsUrl: "http://127.0.0.1/events",
         refreshUrl: "http://127.0.0.1/refresh",
+        scopeUrl: "http://127.0.0.1/scope",
     });
     assert.match(html, /aria-live="polite"/);
     assert.match(html, /prefers-reduced-motion/);
     assert.match(html, /role="tree"/);
+    assert.match(html, /id="scopeSelect"/);
+    assert.match(html, />All sessions</);
+    assert.match(html, /id="projectFilter"/);
+    assert.match(html, /synthetic grouping container, not a session or parent-child relationship/);
+    assert.match(html, /filterConstellationView/);
+    assert.match(html, /resolveProjectFilter/);
+    assert.match(html, /"aria-hidden": "true"/);
+    assert.match(html, /Ambiguous project filter/);
+    assert.match(html, /Project unavailable/);
+    assert.match(html, /elements\.projectFilter\.disabled = Boolean\(scopedProject\?\.requested\)/);
+    assert.match(html, /The project name is ambiguous\. Use its project ID\./);
+    assert.match(html, /The selected project is unavailable\./);
+    assert.match(html, /async function switchScope/);
+    assert.match(html, /scope change failed/i);
     assert.match(html, /Mission status counts/);
     assert.match(html, /CURRENT/);
     assert.match(html, /current session/);
@@ -796,6 +1602,10 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     assert.match(html, /aria-hidden="true"/);
     assert.match(html, /function closeInspector/);
     assert.match(html, /function appendModelDetail/);
+    assert.match(
+        html,
+        /node\.parentId\s*\?\s*"parent session outside this project; grouped for display"\s*:\s*"no recorded parent; grouped for display"/
+    );
     assert.match(html, /localLabel\.textContent = node\.demoLocalModel \? "Demo local model" : "Local model"/);
     assert.match(html, /"aria-label": "Runs locally"/);
     assert.match(html, /title\.textContent = "Runs locally"/);

@@ -1,6 +1,7 @@
 import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { filterConstellationView } from "./layout.mjs";
 
 export const STATUSES = [
     "busy",
@@ -16,17 +17,20 @@ export const STATUSES = [
 export const FILTER_PROPERTIES = {
     status: { type: "string", enum: STATUSES },
     repository: { type: "string", minLength: 1, maxLength: 180 },
+    project: { type: "string", minLength: 1, maxLength: 180 },
 };
 
 export const CANVAS_OPEN_INPUT_SCHEMA = {
     type: "object",
     properties: {
         ...FILTER_PROPERTIES,
+        scope: { type: "string", enum: ["tree", "all"] },
         demoLocalModel: { type: "boolean" },
     },
     additionalProperties: false,
 };
 
+const overviewRootId = "__agent_constellation_overview__";
 const statusPriority = new Map(STATUSES.map((status, index) => [status, index]));
 const localProviders = new Set(["ollama", "winml", "local"]);
 const localModelPrefix = /^(?:ollama|winml|local)[/:]/;
@@ -76,6 +80,16 @@ function databaseColumns(database, table) {
         databaseRows(database, `PRAGMA table_info(${table})`)
             .map((row) => sanitizeText(row.name, 80))
             .filter(Boolean)
+    );
+}
+
+function databaseHasTable(database, table) {
+    return Boolean(
+        databaseRows(
+            database,
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+            [table]
+        )[0]
     );
 }
 
@@ -272,22 +286,36 @@ function readApplicationRows(appDatabase) {
             projects: [],
             repoContexts: [],
             activities: new Map(),
+            availability: {
+                relationships: false,
+                projects: false,
+            },
         };
     }
     const sessionColumns = databaseColumns(appDatabase, "sessions");
     const providerSelection = sessionColumns.has("provider_id")
         ? "provider_id"
         : "NULL AS provider_id";
+    const sessionTypeSelection = sessionColumns.has("session_type")
+        ? "session_type"
+        : "NULL AS session_type";
+    const hasWorkspaces = databaseHasTable(appDatabase, "workspaces");
+    const hasAliases = databaseHasTable(appDatabase, "workspace_session_aliases");
+    const hasParents = databaseHasTable(appDatabase, "workspace_parent_links");
+    const hasProjects = databaseHasTable(appDatabase, "projects");
+    const hasRepoContexts = databaseHasTable(appDatabase, "workspace_repo_contexts");
+    const hasActivities = databaseHasTable(appDatabase, "activity_items");
     return {
         sessions: databaseRows(
             appDatabase,
             `SELECT id, mode, model, reasoning_effort, ${providerSelection},
+                    ${sessionTypeSelection},
                     is_running, was_interrupted,
                     created_at, updated_at, archived_at AS session_archived_at,
                     forked_from_session_id
              FROM sessions`
         ),
-        workspaces: databaseRows(
+        workspaces: hasWorkspaces ? databaseRows(
             appDatabase,
             `SELECT id, project_id, branch, name, session_id, archived_at AS workspace_archived_at,
                     creator_session_id, coordinating_creator_session_id,
@@ -295,23 +323,29 @@ function readApplicationRows(appDatabase) {
                     source_issue_repo_full_name, source_issue_number,
                     created_pr_repo_full_name, created_pr_number
              FROM workspaces`
-        ),
-        aliases: databaseRows(appDatabase, "SELECT session_id, workspace_id FROM workspace_session_aliases"),
-        parents: databaseRows(
+        ) : [],
+        aliases: hasAliases
+            ? databaseRows(appDatabase, "SELECT session_id, workspace_id FROM workspace_session_aliases")
+            : [],
+        parents: hasParents ? databaseRows(
             appDatabase,
             "SELECT child_workspace_id, parent_workspace_id, creator_session_id FROM workspace_parent_links"
-        ),
-        projects: databaseRows(
+        ) : [],
+        projects: hasProjects ? databaseRows(
             appDatabase,
             "SELECT id, name, github_owner, github_repo, main_repo_path FROM projects"
-        ),
-        repoContexts: databaseRows(
+        ) : [],
+        repoContexts: hasRepoContexts ? databaseRows(
             appDatabase,
             `SELECT workspace_id, repo_full_name, source_pr_number,
                     source_issue_number, created_pr_number
              FROM workspace_repo_contexts`
-        ),
-        activities: latestActivities(appDatabase),
+        ) : [],
+        activities: hasActivities ? latestActivities(appDatabase) : new Map(),
+        availability: {
+            relationships: hasWorkspaces && hasParents,
+            projects: hasWorkspaces && hasProjects,
+        },
     };
 }
 
@@ -408,6 +442,8 @@ function buildRawNodes(rows, store, sessionStateRoot) {
             sanitizeText(workspace?.creator_session_id, 80) ||
             sanitizeText(sessionRow.forked_from_session_id, 80) ||
             undefined;
+        const sessionType = sanitizeText(sessionRow.session_type, 40);
+        const isHomeChat = sessionType === "general_chat";
         const repository =
             repositoryLabel(
                 repoContext?.repo_full_name ||
@@ -419,7 +455,7 @@ function buildRawNodes(rows, store, sessionStateRoot) {
                         : "") ||
                     storeRow?.repository ||
                     project?.main_repo_path
-            ) || "Unknown repository";
+            ) || "No project";
         const events = readEventTail(sessionStateRoot, sessionRow.id);
         const statusDetails = deriveStatus(sessionRow, events, rows.activities.get(sessionRow.id));
         const refs = referenceDetails(workspace, repoContext, store.refs.get(sessionRow.id) ?? []);
@@ -427,9 +463,15 @@ function buildRawNodes(rows, store, sessionStateRoot) {
             id: sessionRow.id,
             parentId: parentSessionId,
             workspaceId: sanitizeText(workspace?.id, 80) || undefined,
+            projectId: sanitizeText(project?.id, 80) || undefined,
+            projectName:
+                sanitizeText(project?.name, 140) ||
+                (isHomeChat ? "My Copilot" : "No project"),
+            sessionType: sessionType || undefined,
+            isHomeChat,
             name:
                 sanitizeText(workspace?.name, 140) ||
-                `Session ${shortId(sessionRow.id)}`,
+                (isHomeChat ? "Home chat" : `Standalone session ${shortId(sessionRow.id)}`),
             repository,
             branch: sanitizeText(workspace?.branch || storeRow?.branch, 180) || undefined,
             mode: sanitizeText(sessionRow.mode, 30) || undefined,
@@ -455,7 +497,8 @@ function fallbackRoot(currentSessionId, store, sessionStateRoot) {
     return {
         id: currentSessionId,
         name: `Current session ${shortId(currentSessionId)}`,
-        repository: repositoryLabel(row?.repository || row?.cwd) || "Unknown repository",
+        repository: repositoryLabel(row?.repository || row?.cwd) || "No project",
+        projectName: "No project",
         branch: sanitizeText(row?.branch, 180) || undefined,
         createdAt: isoTimestamp(row?.created_at),
         updatedAt: isoTimestamp(
@@ -463,6 +506,10 @@ function fallbackRoot(currentSessionId, store, sessionStateRoot) {
         ),
         status: "idle",
     };
+}
+
+function visualParentId(node) {
+    return node?.syntheticParentId || node?.parentId;
 }
 
 function descendantsOf(rootId, rawNodes) {
@@ -498,14 +545,46 @@ function topmostAccessibleAncestor(currentSessionId, nodes) {
     return rootId;
 }
 
+function allScopeRootIds(nodes) {
+    const byId = new Map(nodes.map((node) => [node.id, node]));
+    const children = new Map();
+    for (const node of nodes) {
+        if (!node.parentId || !byId.has(node.parentId)) continue;
+        if (!children.has(node.parentId)) children.set(node.parentId, []);
+        children.get(node.parentId).push(node.id);
+    }
+    const roots = nodes
+        .filter((node) => !node.parentId || !byId.has(node.parentId))
+        .map((node) => node.id)
+        .sort();
+    const rootIds = new Set();
+    const visited = new Set();
+    const visit = (rootId) => {
+        rootIds.add(rootId);
+        const queue = [rootId];
+        while (queue.length) {
+            const id = queue.shift();
+            if (!id || visited.has(id)) continue;
+            visited.add(id);
+            for (const childId of children.get(id) ?? []) queue.push(childId);
+        }
+    };
+    for (const rootId of roots) visit(rootId);
+    for (const node of [...nodes].sort((left, right) => left.id.localeCompare(right.id))) {
+        if (!visited.has(node.id)) visit(node.id);
+    }
+    return rootIds;
+}
+
 export function layoutConstellation(nodes, rootId, currentSessionId = rootId) {
     const byId = new Map(nodes.map((node) => [node.id, { ...node }]));
     if (!byId.has(rootId)) return { nodes: [], edges: [], width: 960, height: 600 };
     const children = new Map();
     for (const node of byId.values()) {
-        if (!node.parentId || !byId.has(node.parentId)) continue;
-        if (!children.has(node.parentId)) children.set(node.parentId, []);
-        children.get(node.parentId).push(node.id);
+        const parentId = visualParentId(node);
+        if (!parentId || !byId.has(parentId)) continue;
+        if (!children.has(parentId)) children.set(parentId, []);
+        children.get(parentId).push(node.id);
     }
     for (const items of children.values()) {
         items.sort((leftId, rightId) => {
@@ -547,13 +626,19 @@ export function layoutConstellation(nodes, rootId, currentSessionId = rootId) {
         isCurrent: id === currentSessionId,
     }));
     const edges = laidOutNodes
-        .filter((node) => node.parentId && positioned.has(node.parentId))
-        .map((node) => ({ source: node.parentId, target: node.id }));
+        .filter((node) => visualParentId(node) && positioned.has(visualParentId(node)))
+        .map((node) => ({
+            source: visualParentId(node),
+            target: node.id,
+            kind: node.syntheticParentId ? "containment" : "parent-child",
+            synthetic: Boolean(node.syntheticParentId),
+        }));
     return { nodes: laidOutNodes, edges, width, height };
 }
 
 export function normalizeConstellation(rawNodes, currentSessionId, metadata = {}) {
     const currentId = sanitizeText(currentSessionId, 80);
+    const requestedScope = metadata.scope === "all" ? "all" : "tree";
     const unique = new Map();
     for (const input of rawNodes) {
         const id = sanitizeText(input?.id, 80);
@@ -565,8 +650,12 @@ export function normalizeConstellation(rawNodes, currentSessionId, metadata = {}
             id,
             parentId: sanitizeText(input.parentId, 80) || undefined,
             workspaceId: sanitizeText(input.workspaceId, 80) || undefined,
+            projectId: sanitizeText(input.projectId, 80) || undefined,
+            projectName: sanitizeText(input.projectName, 140) || "No project",
+            sessionType: sanitizeText(input.sessionType, 40) || undefined,
+            isHomeChat: input.isHomeChat === true,
             name: sanitizeText(input.name, 140) || `Session ${shortId(id)}`,
-            repository: sanitizeText(input.repository, 180) || "Unknown repository",
+            repository: sanitizeText(input.repository, 180) || "No project",
             branch: sanitizeText(input.branch, 180) || undefined,
             mode: sanitizeText(input.mode, 30) || undefined,
             provider,
@@ -586,33 +675,94 @@ export function normalizeConstellation(rawNodes, currentSessionId, metadata = {}
                   }
                 : undefined,
             status,
+            nodeType: "session",
+            synthetic: false,
         });
     }
     if (!unique.has(currentId)) {
         unique.set(currentId, {
             id: currentId,
             name: `Current session ${shortId(currentId)}`,
-            repository: "Unknown repository",
+            repository: "No project",
+            projectName: "No project",
             status: "idle",
+            nodeType: "session",
+            synthetic: false,
         });
     }
-    const rootId = topmostAccessibleAncestor(currentId, unique);
-    const selected = descendantsOf(rootId, unique);
+    const totalDiscoveredSessionCount = unique.size;
+    const treeRootId = topmostAccessibleAncestor(currentId, unique);
+    let rootId = treeRootId;
+    let selected;
+    let independentRealRootCount;
+    if (requestedScope === "all") {
+        const realNodes = [...unique.values()];
+        const allRootIds = allScopeRootIds(realNodes);
+        independentRealRootCount = allRootIds.size;
+        selected = [
+            {
+                id: overviewRootId,
+                name: "All sessions",
+                repository: "All projects",
+                projectName: "All projects",
+                status: "idle",
+                nodeType: "overview",
+                synthetic: true,
+            },
+            ...realNodes.map((node) =>
+                allRootIds.has(node.id)
+                    ? { ...node, syntheticParentId: overviewRootId }
+                    : node
+            ),
+        ];
+        rootId = overviewRootId;
+    } else {
+        selected = descendantsOf(rootId, unique);
+    }
     const layout = layoutConstellation(selected, rootId, currentId);
     const counts = Object.fromEntries(STATUSES.map((status) => [status, 0]));
-    for (const node of layout.nodes) counts[node.status]++;
+    for (const node of layout.nodes) {
+        if (!node.synthetic) counts[node.status]++;
+    }
+    const selectedRealNodes = layout.nodes.filter((node) => !node.synthetic);
+    const selectedRealIds = new Set(selectedRealNodes.map((node) => node.id));
+    independentRealRootCount ??= selectedRealNodes.filter(
+        (node) => !node.parentId || !selectedRealIds.has(node.parentId)
+    ).length;
     return {
-        version: 1,
+        version: 2,
         generatedAt: new Date().toISOString(),
         rootId,
         currentSessionId: currentId,
         ...layout,
         counts,
-        repositories: [...new Set(layout.nodes.map((node) => node.repository))].sort(),
+        repositories: [
+            ...new Set(selectedRealNodes.map((node) => node.repository)),
+        ].sort(),
+        projects: [
+            ...new Map(
+                selectedRealNodes.map((node) => [
+                    `${node.projectId ?? ""}\u0000${node.projectName}`,
+                    {
+                        id: node.projectId,
+                        name: node.projectName,
+                    },
+                ])
+            ).values(),
+        ].sort((left, right) => left.name.localeCompare(right.name)),
+        diagnostics: {
+            requestedScope,
+            effectiveScope: requestedScope,
+            selectedRealSessionCount: selectedRealNodes.length,
+            totalDiscoveredSessionCount,
+            independentRealRootCount,
+        },
         source: {
             appDatabase: metadata.appDatabase ? "available" : "unavailable",
             sessionStore: metadata.sessionStore ? "available" : "unavailable",
             eventMetadata: metadata.eventMetadata ? "available" : "partial",
+            relationships: metadata.relationships ? "available" : "partial",
+            projects: metadata.projects ? "available" : "partial",
             limitations: Array.isArray(metadata.limitations)
                 ? metadata.limitations.map((item) => sanitizeText(item, 180)).filter(Boolean)
                 : [],
@@ -640,46 +790,27 @@ export function decorateConstellationForDemo(state) {
 export function filterConstellationState(state, input = {}) {
     const status = STATUSES.includes(input?.status) ? input.status : undefined;
     const repository = sanitizeText(input?.repository, 180);
-    if (!status && !repository) return state;
-    const keep = new Set(
-        state.nodes
-            .filter(
-                (node) =>
-                    (!status || node.status === status) &&
-                    (!repository || node.repository.toLowerCase() === repository.toLowerCase())
-            )
-            .map((node) => node.id)
-    );
-    keep.add(state.rootId);
-    keep.add(state.currentSessionId);
-    let changed = true;
-    while (changed) {
-        changed = false;
-        for (const node of state.nodes) {
-            if (keep.has(node.id) && node.parentId && !keep.has(node.parentId)) {
-                keep.add(node.parentId);
-                changed = true;
-            }
-        }
-    }
-    const nodes = state.nodes.filter((node) => keep.has(node.id));
-    const nodeIds = new Set(nodes.map((node) => node.id));
-    return {
-        ...state,
-        nodes,
-        edges: state.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)),
-    };
+    const project = sanitizeText(input?.project, 180);
+    return filterConstellationView(state, { status, repository, project });
 }
 
 export function stateFingerprint(state) {
     return JSON.stringify({
         rootId: state.rootId,
         currentSessionId: state.currentSessionId,
+        diagnostics: state.diagnostics,
         nodes: state.nodes.map((node) => ({
             id: node.id,
             parentId: node.parentId,
+            syntheticParentId: node.syntheticParentId,
+            synthetic: node.synthetic,
+            nodeType: node.nodeType,
             name: node.name,
             repository: node.repository,
+            projectId: node.projectId,
+            projectName: node.projectName,
+            sessionType: node.sessionType,
+            isHomeChat: node.isHomeChat,
             branch: node.branch,
             provider: node.provider,
             model: node.model,
@@ -704,6 +835,7 @@ export function collectConstellationState({
     appDatabasePath = path.join(copilotHome, "data.db"),
     sessionStorePath = path.join(copilotHome, "session-store.db"),
     sessionStateRoot = path.join(copilotHome, "session-state"),
+    scope = "tree",
 } = {}) {
     const sessionId = sanitizeText(currentSessionId, 80);
     if (!sessionId) throw new Error("A current session ID is required");
@@ -728,10 +860,19 @@ export function collectConstellationState({
         if (!hasEventMetadata) {
             limitations.push("Busy timing and human-gate inference are limited.");
         }
+        if (!rows.availability.relationships) {
+            limitations.push("Parent-child relationships may be incomplete.");
+        }
+        if (!rows.availability.projects) {
+            limitations.push("Project grouping metadata may be incomplete.");
+        }
         return normalizeConstellation([...rawNodes.values()], sessionId, {
             appDatabase: Boolean(appDatabase),
             sessionStore: Boolean(sessionStoreDatabase),
             eventMetadata: hasEventMetadata,
+            relationships: rows.availability.relationships,
+            projects: rows.availability.projects,
+            scope,
             limitations,
         });
     } finally {
@@ -739,3 +880,5 @@ export function collectConstellationState({
         sessionStoreDatabase?.close();
     }
 }
+
+export { overviewRootId };

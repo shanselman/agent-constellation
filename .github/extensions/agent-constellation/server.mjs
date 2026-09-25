@@ -1,7 +1,12 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { sanitizeText, stateFingerprint } from "./data.mjs";
+import {
+    filterConstellationState,
+    sanitizeText,
+    stateFingerprint,
+} from "./data.mjs";
+import { resolveProjectFilter } from "./layout.mjs";
 import { renderConstellationHtml } from "./renderer.mjs";
 
 const layoutModule = readFileSync(new URL("./layout.mjs", import.meta.url), "utf8");
@@ -111,11 +116,26 @@ function publishState(entry) {
     }
 }
 
+function applyProjectScope(state, projectScope) {
+    if (!projectScope.requested) return state;
+    const lookup = projectScope.id || projectScope.requested;
+    const resolution = resolveProjectFilter(state.projects, lookup);
+    if (!projectScope.id && resolution.matched && resolution.id) {
+        projectScope.id = resolution.id;
+    }
+    projectScope.status = resolution.status;
+    projectScope.name = resolution.name;
+    return filterConstellationState(state, {
+        project: projectScope.id || projectScope.requested,
+    });
+}
+
 export async function refreshConstellationServer(entryOrPromise, { publish = true } = {}) {
     const entry = await entryOrPromise;
     if (!entry) throw new Error("Canvas server is not open");
     if (entry.refreshPromise) return entry.refreshPromise;
-    entry.refreshPromise = Promise.resolve(entry.dataProvider())
+    entry.refreshPromise = Promise.resolve(entry.dataProvider({ scope: entry.scope }))
+        .then((next) => applyProjectScope(next, entry.projectScope))
         .then((next) => {
             const fingerprint = stateFingerprint(next);
             const changed = fingerprint !== entry.fingerprint;
@@ -130,15 +150,38 @@ export async function refreshConstellationServer(entryOrPromise, { publish = tru
     return entry.refreshPromise;
 }
 
+export async function setConstellationScope(entryOrPromise, scope) {
+    const entry = await entryOrPromise;
+    if (!entry) throw new Error("Canvas server is not open");
+    if (!["tree", "all"].includes(scope)) {
+        throw new RequestError(400, "Scope must be tree or all");
+    }
+    if (entry.refreshPromise) await entry.refreshPromise;
+    entry.scope = scope;
+    return refreshConstellationServer(entry);
+}
+
 export async function startConstellationServer({
     dataProvider,
     initialRepository = "",
+    initialProject = "",
     initialStatus = "",
+    initialScope = "tree",
     pollIntervalMs = 2_000,
     logger,
 } = {}) {
     if (typeof dataProvider !== "function") throw new Error("A data provider is required");
-    const initialState = await dataProvider();
+    const scope = initialScope === "all" ? "all" : "tree";
+    const projectScope = {
+        requested: sanitizeText(initialProject, 180),
+        id: undefined,
+        name: undefined,
+        status: "none",
+    };
+    const initialState = applyProjectScope(
+        await dataProvider({ scope }),
+        projectScope
+    );
     const entry = {
         server: undefined,
         url: "",
@@ -150,6 +193,8 @@ export async function startConstellationServer({
         poller: undefined,
         refreshPromise: undefined,
         dataProvider,
+        scope,
+        projectScope,
         state: initialState,
         fingerprint: stateFingerprint(initialState),
     };
@@ -178,8 +223,12 @@ export async function startConstellationServer({
                     stateUrl: `${entry.url}state`,
                     eventsUrl: `${entry.url}events`,
                     refreshUrl: `${entry.url}refresh`,
+                    scopeUrl: `${entry.url}scope`,
                     initialRepository: sanitizeText(initialRepository, 180),
+                    initialProject:
+                        entry.projectScope.id || entry.projectScope.requested,
                     initialStatus: sanitizeText(initialStatus, 30),
+                    initialScope: entry.scope,
                 });
                 response.writeHead(200, {
                     "content-type": "text/html; charset=utf-8",
@@ -229,6 +278,19 @@ export async function startConstellationServer({
                 const body = await readJsonBody(request);
                 if (Object.keys(body).length) throw new RequestError(400, "Refresh body must be empty");
                 writeJson(response, 200, await refreshConstellationServer(entry));
+                return;
+            }
+
+            if (request.method === "POST" && url.pathname === "/scope") {
+                requirePageSession(request, entry);
+                const body = await readJsonBody(request);
+                if (
+                    Object.keys(body).some((key) => key !== "scope") ||
+                    !["tree", "all"].includes(body.scope)
+                ) {
+                    throw new RequestError(400, "Scope body must specify tree or all");
+                }
+                writeJson(response, 200, await setConstellationScope(entry, body.scope));
                 return;
             }
 
