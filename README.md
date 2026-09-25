@@ -43,6 +43,14 @@ Completed descendants collapse into a **Completed shelf** so a large constellati
 
 Wide canvases use a horizontal family-tree layout. Narrow or tall side panes automatically switch to a compact vertical mission-control layout with readable cards, horizontal ancestry, and scrollable depth. The toolbar also condenses for narrow panes.
 
+### Scale and repository clusters
+
+Small constellations keep the same card-by-card layout. At 30 visible sessions or more, three or more direct sibling subtrees from the same repository collapse into a deterministic repository summary. The summary remains a sibling of the real sessions rather than becoming their parent, and its dashed edge is explicitly synthetic. Expanding it restores every original session and parent-child edge.
+
+Select a session and use **Collapse subtree** in the inspector to hide ordinary descendants behind a count summary. The current session, the selected session, sessions waiting for user or plan input, blocked or failed sessions, and their ancestry remain visible. This keeps operationally important paths readable without changing the recorded family tree.
+
+Grouping is deliberately simple: it uses existing repository labels, stable status/name/ID ordering, and linear tree passes followed by sibling sorting. It does not infer relationships, merge unrelated roots, or change which sessions the collector returns.
+
 ### Model and reasoning badges
 
 When Copilot exposes model metadata, cards and the inspector display a conservative human-readable label such as `GPT-5.6 Sol Fast · High`. Missing provider or model fields are handled without hiding the session.
@@ -130,6 +138,8 @@ For an explicit local-model UI demonstration:
 - **+ / -** zooms.
 - **Filter** narrows by status or repository.
 - **Click or press Enter/Space** on a session to open its inspector.
+- **Collapse subtree / Expand subtree** in the inspector hides or restores ordinary descendants while preserving important paths.
+- **Click or press Enter/Space** on a dashed repository summary to expand or collapse that sibling group.
 - **Arrow keys** move focus directionally between session cards.
 - **Click the Completed shelf** to expand or collapse completed descendants.
 - **Drag empty canvas space** to pan.
@@ -154,7 +164,7 @@ The installable extension lives entirely in [`.github/extensions/agent-constella
 |---|---|
 | `extension.mjs` | Declares the canvas, open schema, actions, and lifecycle with the Copilot SDK. |
 | `data.mjs` | Reads local sources, derives statuses and relationships, sanitizes metadata, filters state, and isolates demo decoration. |
-| `layout.mjs` | Produces deterministic horizontal/vertical layouts, completed-shelf behavior, model labels, fit scaling, and pinch transforms. |
+| `layout.mjs` | Produces deterministic horizontal/vertical layouts, repository summaries, protected subtree collapse, completed-shelf behavior, model labels, fit scaling, and pinch transforms. |
 | `renderer.mjs` | Generates the accessible, responsive, theme-aware canvas UI. |
 | `server.mjs` | Hosts the token-protected loopback page, JSON state, refresh endpoint, and SSE stream. |
 | `agent-constellation.test.mjs` | Covers collection, sanitization, relationships, responsive layout, gestures, local-model semantics, renderer accessibility, and loopback protections. |
@@ -208,7 +218,7 @@ The TypeScript check compiles a small SDK contract fixture so changes to canvas 
 
 To exercise the extension in this repository, reload Copilot extensions, open **Agent Constellation**, invoke its `refresh` and `get_state` actions, and verify invalid open/action inputs are rejected by the SDK schema.
 
-The extension intentionally has **no runtime dependencies**. Keep renderer assets self-contained and preserve the loopback, token, sanitization, and read-only database guarantees.
+The extension intentionally has **no runtime dependencies**. Keep renderer assets self-contained and preserve the loopback, token, sanitization, and read-only database guarantees. Scale changes should test small trees, large synthetic trees, both orientations, stable ordering, protected-session visibility, and real-edge integrity.
 
 ## Contributing
 

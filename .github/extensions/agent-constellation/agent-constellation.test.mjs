@@ -120,6 +120,44 @@ function fixtureState() {
     );
 }
 
+function largeRepositoryState() {
+    const nodes = [
+        {
+            id: "root",
+            name: "Coordinator",
+            repository: "octo/control",
+            status: "idle",
+        },
+    ];
+    for (let repositoryIndex = 0; repositoryIndex < 3; repositoryIndex++) {
+        for (let childIndex = 0; childIndex < 40; childIndex++) {
+            const id = `repo-${repositoryIndex}-${childIndex}`;
+            nodes.push({
+                id,
+                parentId: "root",
+                name: `Worker ${repositoryIndex}-${String(childIndex).padStart(2, "0")}`,
+                repository: `octo/repository-${repositoryIndex}`,
+                status:
+                    id === "repo-1-0"
+                        ? "waiting-user"
+                        : id === "repo-0-0"
+                          ? "busy"
+                          : "idle",
+            });
+            if (childIndex % 5 === 0) {
+                nodes.push({
+                    id: `${id}-child`,
+                    parentId: id,
+                    name: `Nested ${repositoryIndex}-${childIndex}`,
+                    repository: `octo/repository-${repositoryIndex}`,
+                    status: "idle",
+                });
+            }
+        }
+    }
+    return normalizeConstellation(nodes, "repo-0-0");
+}
+
 test("normalization sanitizes metadata and layout is deterministic", () => {
     const first = fixtureState();
     const second = fixtureState();
@@ -410,6 +448,8 @@ test("responsive layout uses vertical mission-control columns and collapses comp
     ]) {
         const layout = layoutResponsiveConstellation(source, { width, height });
         assert.equal(layout.orientation, "vertical");
+        assert.equal(layout.clusterCount, 0);
+        assert.equal(layout.nodes.some((node) => node.isCluster), false);
         assert.equal(layout.completedCount, 12);
         assert.equal(layout.nodes.some((node) => node.id === completedShelfId), true);
         assert.equal(layout.nodes.some((node) => node.id === "completed-0"), false);
@@ -444,13 +484,216 @@ test("responsive layout uses vertical mission-control columns and collapses comp
     assert.equal(expanded.height > 900, true);
 
     const wide = layoutResponsiveConstellation(source, { width: 1200, height: 700 });
+    const clusteringDisabled = layoutResponsiveConstellation(source, {
+        width: 1200,
+        height: 700,
+        clusterThreshold: Number.MAX_SAFE_INTEGER,
+    });
     assert.equal(wide.orientation, "horizontal");
     assert.equal(wide.cardHeight, 76);
     assert.equal(wide.nodes.find((node) => node.id === "current").isLocalModel, true);
+    assert.deepEqual(
+        wide.nodes.map(({ id, x, y, depth }) => ({ id, x, y, depth })),
+        clusteringDisabled.nodes.map(({ id, x, y, depth }) => ({ id, x, y, depth }))
+    );
     assert.equal(orientationForSize(420, 900), "vertical");
     assert.equal(orientationForSize(700, 1100), "vertical");
     assert.equal(orientationForSize(1200, 700), "horizontal");
     assert.equal(fitWidthScale(420, 2400), 0.82);
+});
+
+test("large trees form deterministic repository clusters without hiding important sessions", () => {
+    const source = largeRepositoryState();
+    const options = {
+        width: 1500,
+        height: 800,
+        selectedId: "repo-2-0",
+    };
+    const first = layoutResponsiveConstellation(source, options);
+    const second = layoutResponsiveConstellation(source, options);
+    assert.equal(source.nodes.length, 145);
+    assert.equal(first.orientation, "horizontal");
+    assert.equal(first.clusterCount, 3);
+    assert.equal(first.hiddenSessionCount > 100, true);
+    assert.equal(first.nodes.length < 20, true);
+    assert.equal(first.nodes.some((node) => node.id === "repo-0-0" && node.isCurrent), true);
+    assert.equal(first.nodes.some((node) => node.id === "repo-1-0"), true);
+    assert.equal(first.nodes.some((node) => node.id === "repo-2-0"), true);
+    assert.equal(first.nodes.some((node) => node.id === "repo-2-1"), false);
+    assert.deepEqual(
+        first.nodes.map(({ id, x, y, depth }) => ({ id, x, y, depth })),
+        second.nodes.map(({ id, x, y, depth }) => ({ id, x, y, depth }))
+    );
+
+    const cluster = first.nodes.find(
+        (node) => node.isCluster && node.repository === "octo/repository-2"
+    );
+    assert.ok(cluster);
+    const expanded = layoutResponsiveConstellation(source, {
+        ...options,
+        expandedClusterIds: [cluster.id],
+    });
+    assert.equal(
+        expanded.nodes.some((node) => node.id === "repo-2-1"),
+        true
+    );
+    assert.equal(
+        expanded.nodes.some((node) => node.id === cluster.id && node.clusterExpanded),
+        true
+    );
+
+    const sourceEdges = new Set(
+        source.edges.map((edge) => `${edge.source}->${edge.target}`)
+    );
+    for (const edge of expanded.edges) {
+        if (edge.isCluster || edge.isShelf || edge.isCollapsedSummary) continue;
+        assert.equal(sourceEdges.has(`${edge.source}->${edge.target}`), true);
+    }
+
+    const vertical = layoutResponsiveConstellation(source, {
+        ...options,
+        width: 620,
+        height: 1000,
+    });
+    assert.equal(vertical.orientation, "vertical");
+    assert.deepEqual(
+        vertical.nodes.map((node) => node.id).sort(),
+        first.nodes.map((node) => node.id).sort()
+    );
+});
+
+test("subtree collapse keeps selected, current, and attention paths visible", () => {
+    const source = normalizeConstellation(
+        [
+            {
+                id: "root",
+                name: "Coordinator",
+                repository: "octo/control",
+                status: "idle",
+            },
+            {
+                id: "branch",
+                parentId: "root",
+                name: "Branch",
+                repository: "octo/work",
+                status: "idle",
+            },
+            {
+                id: "ordinary",
+                parentId: "branch",
+                name: "Ordinary",
+                repository: "octo/work",
+                status: "idle",
+            },
+            {
+                id: "ordinary-child",
+                parentId: "ordinary",
+                name: "Ordinary child",
+                repository: "octo/work",
+                status: "idle",
+            },
+            {
+                id: "current",
+                parentId: "branch",
+                name: "Current",
+                repository: "octo/work",
+                status: "busy",
+            },
+            {
+                id: "attention",
+                parentId: "branch",
+                name: "Attention",
+                repository: "octo/work",
+                status: "waiting-plan",
+            },
+            {
+                id: "selected",
+                parentId: "branch",
+                name: "Selected",
+                repository: "octo/work",
+                status: "idle",
+            },
+        ],
+        "current"
+    );
+    for (const [width, height, orientation] of [
+        [1200, 700, "horizontal"],
+        [500, 900, "vertical"],
+    ]) {
+        const layout = layoutResponsiveConstellation(source, {
+            width,
+            height,
+            selectedId: "selected",
+            collapsedNodeIds: ["branch"],
+            clusterThreshold: 1,
+        });
+        assert.equal(layout.orientation, orientation);
+        assert.equal(layout.nodes.some((node) => node.id === "branch"), true);
+        assert.equal(layout.nodes.some((node) => node.id === "current"), true);
+        assert.equal(layout.nodes.some((node) => node.id === "attention"), true);
+        assert.equal(layout.nodes.some((node) => node.id === "selected"), true);
+        assert.equal(layout.nodes.some((node) => node.id === "ordinary"), false);
+        const summary = layout.nodes.find((node) => node.isCollapsedSummary);
+        assert.equal(summary.hiddenCount, 2);
+        assert.equal(summary.parentId, "branch");
+        assert.equal(
+            layout.edges.some(
+                (edge) =>
+                    edge.source === "branch" &&
+                    edge.target === summary.id &&
+                    edge.isCollapsedSummary
+            ),
+            true
+        );
+    }
+
+    const expanded = layoutResponsiveConstellation(source, {
+        width: 1200,
+        height: 700,
+        selectedId: "selected",
+        collapsedNodeIds: [],
+        clusterThreshold: 100,
+    });
+    assert.equal(expanded.nodes.some((node) => node.id === "ordinary-child"), true);
+});
+
+test("independent roots remain visible without synthetic session relationships", () => {
+    const state = {
+        rootId: "root-a",
+        currentSessionId: "root-a",
+        nodes: [
+            {
+                id: "root-a",
+                name: "Root A",
+                repository: "octo/a",
+                status: "idle",
+            },
+            {
+                id: "root-b",
+                name: "Root B",
+                repository: "octo/b",
+                status: "idle",
+            },
+        ],
+        edges: [],
+    };
+    for (const [width, height] of [
+        [1200, 700],
+        [500, 900],
+    ]) {
+        const layout = layoutResponsiveConstellation(state, { width, height });
+        assert.deepEqual(
+            layout.nodes.map((node) => node.id).sort(),
+            ["root-a", "root-b"]
+        );
+        assert.deepEqual(layout.edges, []);
+        const rootA = layout.nodes.find((node) => node.id === "root-a");
+        const rootB = layout.nodes.find((node) => node.id === "root-b");
+        assert.notDeepEqual(
+            { x: rootA.x, y: rootA.y },
+            { x: rootB.x, y: rootB.y }
+        );
+    }
 });
 
 test("pinch gesture zooms around the moving midpoint", () => {
@@ -810,6 +1053,9 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     assert.match(html, /state\.pointers = new Map|pointers: new Map/);
     assert.match(html, /applyPinchGesture/);
     assert.match(html, /completedExpanded/);
+    assert.match(html, /id="subtreeToggle"/);
+    assert.match(html, /repository cluster/);
+    assert.match(html, /Important sessions remain visible/);
     assert.match(html, /id="fitWidth"/);
     assert.doesNotMatch(html, />Fit</);
 });
