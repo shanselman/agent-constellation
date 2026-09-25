@@ -25,6 +25,11 @@ import {
 } from "./layout.mjs";
 import { renderConstellationHtml } from "./renderer.mjs";
 import {
+    buildJsonSnapshot,
+    buildVisualSnapshot,
+    serializeJsonSnapshot,
+} from "./snapshots.mjs";
+import {
     closeConstellationServer,
     getOrCreateConstellationServer,
 } from "./server.mjs";
@@ -119,6 +124,138 @@ function fixtureState() {
         { appDatabase: true, sessionStore: true, eventMetadata: true }
     );
 }
+
+test("safe snapshots redact private fields and assign deterministic aliases", () => {
+    const source = {
+        version: 1,
+        generatedAt: "2026-09-25T18:30:00.000Z",
+        rootId: "root-private-id",
+        currentSessionId: "child-private-id",
+        source: {
+            appDatabase: "available",
+            sessionStore: "available",
+            eventMetadata: "available",
+        },
+        nodes: [
+            {
+                id: "child-private-id",
+                parentId: "root-private-id",
+                name: "<script>alert('private prompt')</script>",
+                repository: "octo/child",
+                branch: "users/scott/private-branch",
+                status: "waiting-user",
+                mode: "plan",
+                provider: "github",
+                model: "gpt-5.6-sol",
+                reasoningEffort: "high",
+                humanGate: { type: "user", label: "Reply with secret" },
+                prompt: "Private child prompt",
+                message: "Private child message",
+                task: "Do not export this task",
+                pullRequest: "#42",
+                events: [{ raw: "event payload" }],
+                cookie: "canvas-cookie",
+                pageToken: "page-token",
+            },
+            {
+                id: "path-private-id",
+                parentId: "root-private-id",
+                repository: "C:\\Users\\scott\\private-repo",
+                status: "busy",
+                provider: "github",
+                model: "ghp_superSecretToken",
+            },
+            {
+                id: "root-private-id",
+                repository: "octo/root",
+                status: "idle",
+                model: "claude-sonnet-5",
+            },
+        ],
+    };
+    const original = structuredClone(source);
+    const first = buildJsonSnapshot(source);
+    const reordered = buildJsonSnapshot({
+        ...source,
+        nodes: [source.nodes[2], source.nodes[0], source.nodes[1]],
+    });
+
+    assert.deepEqual(source, original);
+    assert.deepEqual(first, reordered);
+    assert.equal(first.rootAlias, "session-001");
+    assert.equal(first.currentAlias, "session-002");
+    assert.deepEqual(
+        first.nodes.map((node) => node.alias),
+        ["session-001", "session-002", "session-003"]
+    );
+    assert.equal(first.nodes[1].parentAlias, "session-001");
+    assert.equal(first.nodes[2].repository, "Unknown repository");
+    assert.equal(first.nodes[2].model.provider, "github");
+    assert.equal(first.nodes[2].model.name, undefined);
+
+    const serialized = serializeJsonSnapshot(source);
+    for (const privateValue of [
+        "root-private-id",
+        "child-private-id",
+        "path-private-id",
+        "C:\\Users\\scott",
+        "private prompt",
+        "Private child prompt",
+        "Private child message",
+        "Do not export this task",
+        "canvas-cookie",
+        "page-token",
+        "event payload",
+        "ghp_superSecretToken",
+        "users/scott/private-branch",
+    ]) {
+        assert.equal(serialized.includes(privateValue), false, privateValue);
+    }
+});
+
+test("snapshot provenance marks demos and handles an empty constellation", () => {
+    const demo = buildJsonSnapshot(decorateConstellationForDemo(fixtureState()));
+    assert.equal(demo.provenance.source, "demo");
+    assert.equal(demo.provenance.demo, true);
+    assert.equal(demo.nodes.find((node) => node.current).model.local, true);
+
+    const empty = buildJsonSnapshot({
+        version: 1,
+        generatedAt: "not-a-date",
+        nodes: [],
+        source: {},
+    });
+    assert.equal(empty.generatedAt, null);
+    assert.equal(empty.rootAlias, null);
+    assert.equal(empty.currentAlias, null);
+    assert.deepEqual(empty.nodes, []);
+    assert.equal(Object.values(empty.counts).every((count) => count === 0), true);
+});
+
+test("visual snapshots are self-contained and escape hostile text", () => {
+    const state = {
+        version: 1,
+        generatedAt: "2026-09-25T18:30:00.000Z",
+        rootId: "private-id",
+        currentSessionId: "private-id",
+        source: {},
+        nodes: [
+            {
+                id: "private-id",
+                repository: "octo/<script>alert(1)</script>",
+                status: "busy",
+                model: "<img/src=x/onerror=alert(2)>",
+                rawEvent: "do not export",
+            },
+        ],
+    };
+    const html = buildVisualSnapshot(state);
+    assert.match(html, /^<!doctype html>/);
+    assert.match(html, /Privacy guarantee/);
+    assert.match(html, /No sessions were available|session-001/);
+    assert.doesNotMatch(html, /<script>|onerror=|private-id|rawEvent|do not export/i);
+    assert.doesNotMatch(html, /https?:\/\//i);
+});
 
 test("normalization sanitizes metadata and layout is deterministic", () => {
     const first = fixtureState();
@@ -708,6 +845,10 @@ test("loopback server rejects unsafe requests and cleans up idempotently", async
         assert.equal(layoutModule.status, 200);
         assert.match(await layoutModule.text(), /layoutResponsiveConstellation/);
 
+        const snapshotsModule = await fetch(`${first.url}snapshots.mjs`, { headers: { cookie } });
+        assert.equal(snapshotsModule.status, 200);
+        assert.match(await snapshotsModule.text(), /buildJsonSnapshot/);
+
         const stateResponse = await fetch(`${first.url}state`, { headers: { cookie } });
         assert.equal(stateResponse.status, 200);
         const normalState = await stateResponse.json();
@@ -811,5 +952,10 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     assert.match(html, /applyPinchGesture/);
     assert.match(html, /completedExpanded/);
     assert.match(html, /id="fitWidth"/);
+    assert.match(html, /id="exportToggle"/);
+    assert.match(html, /Before saving:/);
+    assert.match(html, /serializeJsonSnapshot\(filteredState\(\)\)/);
+    assert.match(html, /buildVisualSnapshot\(filteredState\(\)\)/);
+    assert.match(html, /URL\.createObjectURL/);
     assert.doesNotMatch(html, />Fit</);
 });

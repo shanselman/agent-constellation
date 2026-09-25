@@ -62,6 +62,15 @@ For demonstrations, the canvas accepts an isolated `demoLocalModel: true` open i
 
 Each open canvas gets its own dependency-free HTTP server bound to an ephemeral `127.0.0.1` port. Server-Sent Events push state changes to the canvas, with lightweight polling as a fallback. Manual refresh and the agent-callable `refresh` action are also available.
 
+### Safe snapshots
+
+The **Export** control creates two dependency-free formats entirely inside the canvas iframe:
+
+- **JSON** with an explicit schema version, provenance, privacy declaration, stable-in-snapshot aliases, topology, status, repository labels, and sanitized model metadata.
+- **Visual HTML** as a self-contained, printable static view with no scripts or external assets.
+
+The privacy guarantee is shown before either download. Snapshot exports use a strict allowlist: session and workspace IDs are replaced with aliases, while machine-specific paths, session names, branches, prompts, messages, tasks, raw references, secrets, cookies, page tokens, and raw events are excluded. Demo-decorated state is explicitly marked with `provenance.source: "demo"`.
+
 ## Privacy and local security
 
 Agent Constellation is deliberately local-first:
@@ -69,6 +78,7 @@ Agent Constellation is deliberately local-first:
 - Reads Copilot's local SQLite databases in **read-only** mode.
 - Reads only a bounded tail of local session event metadata.
 - Returns sanitized identifiers and operational metadata—not prompts, chat messages, secrets, tool arguments, or repository file contents.
+- Builds snapshot downloads locally from an export-specific allowlist; no export payload is sent to the loopback server or any external service.
 - Binds its renderer server to `127.0.0.1` only.
 - Requires an unguessable per-canvas bootstrap token, then stores it in an `HttpOnly`, `SameSite=Strict` cookie.
 - Rejects non-loopback hosts, cross-site requests, oversized request bodies, and unexpected refresh payloads.
@@ -129,6 +139,7 @@ For an explicit local-model UI demonstration:
 - **Width** fits the tree to a readable minimum card scale.
 - **+ / -** zooms.
 - **Filter** narrows by status or repository.
+- **Export** shows the snapshot privacy guarantee, then saves sanitized JSON or self-contained visual HTML locally.
 - **Click or press Enter/Space** on a session to open its inspector.
 - **Arrow keys** move focus directionally between session cards.
 - **Click the Completed shelf** to expand or collapse completed descendants.
@@ -155,6 +166,7 @@ The installable extension lives entirely in [`.github/extensions/agent-constella
 | `extension.mjs` | Declares the canvas, open schema, actions, and lifecycle with the Copilot SDK. |
 | `data.mjs` | Reads local sources, derives statuses and relationships, sanitizes metadata, filters state, and isolates demo decoration. |
 | `layout.mjs` | Produces deterministic horizontal/vertical layouts, completed-shelf behavior, model labels, fit scaling, and pinch transforms. |
+| `snapshots.mjs` | Builds deterministic, versioned JSON and self-contained visual snapshots through a strict privacy allowlist. |
 | `renderer.mjs` | Generates the accessible, responsive, theme-aware canvas UI. |
 | `server.mjs` | Hosts the token-protected loopback page, JSON state, refresh endpoint, and SSE stream. |
 | `agent-constellation.test.mjs` | Covers collection, sanitization, relationships, responsive layout, gestures, local-model semantics, renderer accessibility, and loopback protections. |
@@ -220,7 +232,7 @@ Potential future work, guided by stable Copilot data surfaces:
 
 - Additional relationship and attention cues without increasing visual noise
 - More compact controls for very narrow panes
-- Optional snapshot/export workflows that preserve the privacy model
+- Additional snapshot layouts and opt-in metadata that preserve the privacy model
 - Compatibility updates as public session metadata evolves
 
 ## Provenance
