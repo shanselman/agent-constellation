@@ -48,6 +48,21 @@ async function requireOpenEntry(instanceId) {
     return entry;
 }
 
+async function refreshForAction(entry) {
+    try {
+        return await refreshConstellationServer(entry);
+    } catch {
+        await session?.log?.("Agent Constellation action refresh unavailable", {
+            level: "warning",
+            ephemeral: true,
+        });
+        throw new CanvasError(
+            "refresh_unavailable",
+            "Agent Constellation could not refresh local metadata"
+        );
+    }
+}
+
 session = await joinSession({
     canvases: [
         createCanvas({
@@ -68,13 +83,15 @@ session = await joinSession({
                     },
                     handler: async (ctx) => {
                         const entry = await requireOpenEntry(ctx.instanceId);
-                        const state = await refreshConstellationServer(entry);
+                        const state = await refreshForAction(entry);
                         return {
                             generatedAt: state.generatedAt,
                             rootId: state.rootId,
                             nodeCount: state.nodes.length,
                             counts: state.counts,
                             source: state.source,
+                            trust: state.trust,
+                            diagnostics: state.diagnostics,
                         };
                     },
                 },
@@ -89,7 +106,7 @@ session = await joinSession({
                     },
                     handler: async (ctx) => {
                         const entry = await requireOpenEntry(ctx.instanceId);
-                        const state = await refreshConstellationServer(entry);
+                        const state = await refreshForAction(entry);
                         return filterConstellationState(state, ctx.input);
                     },
                 },

@@ -30,6 +30,8 @@ export const CANVAS_OPEN_INPUT_SCHEMA = {
 const statusPriority = new Map(STATUSES.map((status, index) => [status, index]));
 const localProviders = new Set(["ollama", "winml", "local"]);
 const localModelPrefix = /^(?:ollama|winml|local)[/:]/;
+const provenanceKinds = new Set(["recorded", "inferred", "unavailable", "demo"]);
+const provenanceSources = new Set(["appDatabase", "sessionStore", "eventMetadata"]);
 
 export function sanitizeText(value, maxLength = 180) {
     if (typeof value !== "string") return "";
@@ -61,6 +63,50 @@ function isoTimestamp(value) {
 
 function shortId(value) {
     return sanitizeText(value, 36).slice(0, 8) || "unknown";
+}
+
+function provenanceKind(value, fallback = "unavailable") {
+    return provenanceKinds.has(value) ? value : fallback;
+}
+
+function provenanceSource(value) {
+    return provenanceSources.has(value) ? value : undefined;
+}
+
+function normalizeProvenance(input, node) {
+    const relationshipSource = provenanceSource(input?.relationshipSource);
+    const repositorySource = provenanceSource(input?.repositorySource);
+    const branchSource = provenanceSource(input?.branchSource);
+    const modelSource = provenanceSource(input?.modelSource);
+    const statusSources = Array.isArray(input?.statusSources)
+        ? [...new Set(input.statusSources.map(provenanceSource).filter(Boolean))]
+        : [];
+    return {
+        relationship: provenanceKind(
+            input?.relationship,
+            node.parentId ? "recorded" : "unavailable"
+        ),
+        relationshipSource,
+        repository: provenanceKind(
+            input?.repository,
+            node.repository && node.repository !== "Unknown repository"
+                ? "recorded"
+                : "unavailable"
+        ),
+        repositorySource,
+        branch: provenanceKind(
+            input?.branch,
+            node.branch ? "recorded" : "unavailable"
+        ),
+        branchSource,
+        model: provenanceKind(
+            input?.model,
+            node.model ? "recorded" : "unavailable"
+        ),
+        modelSource,
+        status: "inferred",
+        statusSources,
+    };
 }
 
 function databaseRows(database, sql, parameters = []) {
@@ -408,18 +454,20 @@ function buildRawNodes(rows, store, sessionStateRoot) {
             sanitizeText(workspace?.creator_session_id, 80) ||
             sanitizeText(sessionRow.forked_from_session_id, 80) ||
             undefined;
+        const appRepository =
+            repoContext?.repo_full_name ||
+            workspace?.source_pr_repo_full_name ||
+            workspace?.source_issue_repo_full_name ||
+            workspace?.created_pr_repo_full_name ||
+            (project?.github_owner && project?.github_repo
+                ? `${project.github_owner}/${project.github_repo}`
+                : "") ||
+            project?.main_repo_path;
+        const storeRepository = storeRow?.repository || storeRow?.cwd;
         const repository =
-            repositoryLabel(
-                repoContext?.repo_full_name ||
-                    workspace?.source_pr_repo_full_name ||
-                    workspace?.source_issue_repo_full_name ||
-                    workspace?.created_pr_repo_full_name ||
-                    (project?.github_owner && project?.github_repo
-                        ? `${project.github_owner}/${project.github_repo}`
-                        : "") ||
-                    storeRow?.repository ||
-                    project?.main_repo_path
-            ) || "Unknown repository";
+            repositoryLabel(appRepository || storeRepository) || "Unknown repository";
+        const appBranch = workspace?.branch;
+        const storeBranch = storeRow?.branch;
         const events = readEventTail(sessionStateRoot, sessionRow.id);
         const statusDetails = deriveStatus(sessionRow, events, rows.activities.get(sessionRow.id));
         const refs = referenceDetails(workspace, repoContext, store.refs.get(sessionRow.id) ?? []);
@@ -431,7 +479,7 @@ function buildRawNodes(rows, store, sessionStateRoot) {
                 sanitizeText(workspace?.name, 140) ||
                 `Session ${shortId(sessionRow.id)}`,
             repository,
-            branch: sanitizeText(workspace?.branch || storeRow?.branch, 180) || undefined,
+            branch: sanitizeText(appBranch || storeBranch, 180) || undefined,
             mode: sanitizeText(sessionRow.mode, 30) || undefined,
             provider: sanitizeText(sessionRow.provider_id, 80) || undefined,
             model: sanitizeText(sessionRow.model, 100) || undefined,
@@ -442,6 +490,30 @@ function buildRawNodes(rows, store, sessionStateRoot) {
                     ? new Date(events.lastActivityAt).toISOString()
                     : sessionRow.updated_at || storeRow?.updated_at
             ),
+            provenance: {
+                relationship: parentSessionId ? "recorded" : "unavailable",
+                relationshipSource: parentSessionId ? "appDatabase" : undefined,
+                repository:
+                    appRepository || storeRepository ? "recorded" : "unavailable",
+                repositorySource: appRepository
+                    ? "appDatabase"
+                    : storeRepository
+                      ? "sessionStore"
+                      : undefined,
+                branch: appBranch || storeBranch ? "recorded" : "unavailable",
+                branchSource: appBranch
+                    ? "appDatabase"
+                    : storeBranch
+                      ? "sessionStore"
+                      : undefined,
+                model: sessionRow.model ? "recorded" : "unavailable",
+                modelSource: sessionRow.model ? "appDatabase" : undefined,
+                status: "inferred",
+                statusSources: [
+                    "appDatabase",
+                    ...(events.available ? ["eventMetadata"] : []),
+                ],
+            },
             ...refs,
             ...statusDetails,
         });
@@ -452,16 +524,30 @@ function buildRawNodes(rows, store, sessionStateRoot) {
 function fallbackRoot(currentSessionId, store, sessionStateRoot) {
     const row = store.sessions.get(currentSessionId);
     const events = readEventTail(sessionStateRoot, currentSessionId);
+    const repository = repositoryLabel(row?.repository || row?.cwd) || "Unknown repository";
+    const branch = sanitizeText(row?.branch, 180) || undefined;
     return {
         id: currentSessionId,
         name: `Current session ${shortId(currentSessionId)}`,
-        repository: repositoryLabel(row?.repository || row?.cwd) || "Unknown repository",
-        branch: sanitizeText(row?.branch, 180) || undefined,
+        repository,
+        branch,
         createdAt: isoTimestamp(row?.created_at),
         updatedAt: isoTimestamp(
             events.lastActivityAt ? new Date(events.lastActivityAt).toISOString() : row?.updated_at
         ),
         status: "idle",
+        provenance: {
+            relationship: "unavailable",
+            repository:
+                repository === "Unknown repository" ? "unavailable" : "recorded",
+            repositorySource:
+                repository === "Unknown repository" ? undefined : "sessionStore",
+            branch: branch ? "recorded" : "unavailable",
+            branchSource: branch ? "sessionStore" : undefined,
+            model: "unavailable",
+            status: "inferred",
+            statusSources: events.available ? ["eventMetadata"] : [],
+        },
     };
 }
 
@@ -561,7 +647,7 @@ export function normalizeConstellation(rawNodes, currentSessionId, metadata = {}
         const status = STATUSES.includes(input.status) ? input.status : "idle";
         const provider = sanitizeText(input.provider, 80) || undefined;
         const model = sanitizeText(input.model, 100) || undefined;
-        unique.set(id, {
+        const normalizedNode = {
             id,
             parentId: sanitizeText(input.parentId, 80) || undefined,
             workspaceId: sanitizeText(input.workspaceId, 80) || undefined,
@@ -586,21 +672,74 @@ export function normalizeConstellation(rawNodes, currentSessionId, metadata = {}
                   }
                 : undefined,
             status,
-        });
+        };
+        normalizedNode.provenance = normalizeProvenance(input.provenance, normalizedNode);
+        unique.set(id, normalizedNode);
     }
     if (!unique.has(currentId)) {
-        unique.set(currentId, {
+        const currentNode = {
             id: currentId,
             name: `Current session ${shortId(currentId)}`,
             repository: "Unknown repository",
             status: "idle",
-        });
+        };
+        currentNode.provenance = normalizeProvenance(undefined, currentNode);
+        unique.set(currentId, currentNode);
     }
     const rootId = topmostAccessibleAncestor(currentId, unique);
     const selected = descendantsOf(rootId, unique);
     const layout = layoutConstellation(selected, rootId, currentId);
     const counts = Object.fromEntries(STATUSES.map((status) => [status, 0]));
     for (const node of layout.nodes) counts[node.status]++;
+    const appDatabase = metadata.appDatabase ? "available" : "unavailable";
+    const sessionStore = metadata.sessionStore ? "available" : "unavailable";
+    const eventMetadata = ["available", "partial", "unavailable"].includes(
+        metadata.eventMetadata
+    )
+        ? metadata.eventMetadata
+        : metadata.eventMetadata
+          ? "available"
+          : "unavailable";
+    const eventSessionsObserved = Math.max(
+        0,
+        Math.min(
+            layout.nodes.length,
+            Number.isFinite(metadata.eventSessionsObserved)
+                ? Math.floor(metadata.eventSessionsObserved)
+                : 0
+        )
+    );
+    const limitations = Array.isArray(metadata.limitations)
+        ? metadata.limitations.map((item) => sanitizeText(item, 180)).filter(Boolean)
+        : [];
+    const sourceDetails = [
+        {
+            id: "appDatabase",
+            label: "App database",
+            availability: appDatabase,
+            provenance: "recorded",
+            description: "Project relationships, app activity, and model selections.",
+        },
+        {
+            id: "sessionStore",
+            label: "Session store",
+            availability: sessionStore,
+            provenance: "recorded",
+            description: "Repository, branch, and reference fallbacks.",
+        },
+        {
+            id: "eventMetadata",
+            label: "Event metadata",
+            availability: eventMetadata,
+            provenance: "recorded",
+            description: "Bounded operational timing and human-gate signals.",
+            coverage: {
+                observed: eventSessionsObserved,
+                total: layout.nodes.length,
+            },
+        },
+    ];
+    const limited = sourceDetails.some((item) => item.availability !== "available");
     return {
         version: 1,
         generatedAt: new Date().toISOString(),
@@ -610,12 +749,38 @@ export function normalizeConstellation(rawNodes, currentSessionId, metadata = {}
         counts,
         repositories: [...new Set(layout.nodes.map((node) => node.repository))].sort(),
         source: {
-            appDatabase: metadata.appDatabase ? "available" : "unavailable",
-            sessionStore: metadata.sessionStore ? "available" : "unavailable",
-            eventMetadata: metadata.eventMetadata ? "available" : "partial",
-            limitations: Array.isArray(metadata.limitations)
-                ? metadata.limitations.map((item) => sanitizeText(item, 180)).filter(Boolean)
-                : [],
+            appDatabase,
+            sessionStore,
+            eventMetadata,
+            eventMetadataCoverage: {
+                observed: eventSessionsObserved,
+                total: layout.nodes.length,
+            },
+            limitations,
+        },
+        trust: {
+            level: limited ? "limited" : "healthy",
+            demoDecoration: {
+                active: false,
+                scope: "None",
+            },
+            sources: sourceDetails,
+            inference: [
+                {
+                    label: "Session status",
+                    provenance: "inferred",
+                    description:
+                        "Derived from available app activity and bounded event metadata.",
+                },
+            ],
+            privacy:
+                "Sanitized operational metadata only; prompts, messages, secrets, raw errors, event payloads, database paths, and file contents are not returned.",
+        },
+        diagnostics: {
+            refresh: {
+                status: "healthy",
+                consecutiveFailures: 0,
+            },
         },
     };
 }
@@ -631,9 +796,21 @@ export function decorateConstellationForDemo(state) {
                   reasoningEffort: "high",
                   isLocalModel: true,
                   demoLocalModel: true,
+                  provenance: {
+                      ...node.provenance,
+                      model: "demo",
+                      modelSource: undefined,
+                  },
               }
             : node
     );
+    decorated.trust = {
+        ...decorated.trust,
+        demoDecoration: {
+            active: true,
+            scope: "Current session model presentation only.",
+        },
+    };
     return decorated;
 }
 
@@ -693,8 +870,11 @@ export function stateFingerprint(state) {
             task: node.task,
             pullRequest: node.pullRequest,
             issue: node.issue,
+            provenance: node.provenance,
         })),
         source: state.source,
+        trust: state.trust,
+        diagnostics: state.diagnostics,
     });
 }
 
@@ -715,9 +895,17 @@ export function collectConstellationState({
         const store = readSessionStoreRows(sessionStoreDatabase);
         const rawNodes = buildRawNodes(rows, store, sessionStateRoot);
         if (!rawNodes.has(sessionId)) rawNodes.set(sessionId, fallbackRoot(sessionId, store, sessionStateRoot));
-        const hasEventMetadata = [...rawNodes.keys()].some((id) =>
-            existsSync(path.join(sessionStateRoot, id, "events.jsonl"))
-        );
+        const rootId = topmostAccessibleAncestor(sessionId, rawNodes);
+        const visibleNodes = descendantsOf(rootId, rawNodes);
+        const eventSessionsObserved = visibleNodes.filter((node) =>
+            node.provenance?.statusSources?.includes("eventMetadata")
+        ).length;
+        const eventMetadata =
+            eventSessionsObserved === 0
+                ? "unavailable"
+                : eventSessionsObserved === visibleNodes.length
+                  ? "available"
+                  : "partial";
         const limitations = [];
         if (!appDatabase) {
             limitations.push("Project relationships and live app status are unavailable.");
@@ -725,13 +913,18 @@ export function collectConstellationState({
         if (!sessionStoreDatabase) {
             limitations.push("Repository, branch, and reference fallback metadata are unavailable.");
         }
-        if (!hasEventMetadata) {
+        if (eventMetadata === "unavailable") {
             limitations.push("Busy timing and human-gate inference are limited.");
+        } else if (eventMetadata === "partial") {
+            limitations.push(
+                "Busy timing and human-gate inference are available for only some sessions."
+            );
         }
         return normalizeConstellation([...rawNodes.values()], sessionId, {
             appDatabase: Boolean(appDatabase),
             sessionStore: Boolean(sessionStoreDatabase),
-            eventMetadata: hasEventMetadata,
+            eventMetadata,
+            eventSessionsObserved,
             limitations,
         });
     } finally {
