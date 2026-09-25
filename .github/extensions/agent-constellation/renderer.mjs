@@ -1210,9 +1210,11 @@ export function renderConstellationHtml(config) {
       const relationships = diagnostics.coverage?.relationships || {};
       const visibility = diagnostics.visibility || {};
       const lastSuccessful = Date.parse(refresh.lastSuccessfulAt || "");
-      const shownRealSessions = (state.layout?.nodes || []).filter(
-        (node) => !node.synthetic && !node.isShelf && !node.isRepositoryGroup
-      ).length;
+      const compaction =
+        state.layout?.diagnostics?.visibility?.compaction || {};
+      const shownRealSessions = Number(
+        compaction.visibleRealSessionCount || 0
+      );
       const searchQuery = normalizeSearchQuery(state.search);
       const projectEnforcement =
         diagnostics.projectFilter?.enforcement ||
@@ -1277,14 +1279,32 @@ export function renderConstellationHtml(config) {
       );
       appendDefinition(
         elements.provenanceDetails,
-        "Search and grouping",
+        "Search and visibility",
         (searchQuery
           ? Number(state.visibleState?.visibility?.directMatchCount || 0) +
             " direct search matches. "
           : "Search inactive. ") +
-          shownRealSessions + " real cards shown; " +
-          Number(state.layout?.hiddenSessionCount || 0) +
-          " sessions hidden in repository groups or shelves."
+          Number(compaction.scopeFilteredRealSessionCount || 0) +
+          " sessions remain after scope and filters; " +
+          Number(compaction.selectedRealSessionCount || 0) +
+          " remain after search/focus; " +
+          shownRealSessions + " real cards are shown."
+      );
+      appendDefinition(
+        elements.provenanceDetails,
+        "Compaction",
+        Number(compaction.totalHiddenRealSessionCount || 0) +
+          " real sessions hidden from the canvas · " +
+          Number(compaction.groupedHiddenSessionCount || 0) +
+          " grouped (" +
+          Number(compaction.repositoryGroupedHiddenSessionCount || 0) +
+          " repository, " +
+          Number(compaction.overflowGroupedHiddenSessionCount || 0) +
+          " overflow) · " +
+          Number(compaction.completedShelvedSessionCount || 0) +
+          " completed shelved · " +
+          Number(compaction.archivedShelvedSessionCount || 0) +
+          " archived shelved. Synthetic summaries are excluded."
       );
       appendDefinition(
         elements.provenanceDetails,
@@ -1836,7 +1856,7 @@ export function renderConstellationHtml(config) {
         (counts.completed || 0) + " completed · " + state.layout.orientation;
       if (state.layout.hiddenSessionCount) {
         elements.summary.textContent +=
-          " · " + state.layout.hiddenSessionCount + " grouped";
+          " · " + state.layout.hiddenSessionCount + " hidden";
       }
       elements.constellation.setAttribute(
         "aria-orientation",

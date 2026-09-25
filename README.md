@@ -99,7 +99,8 @@ The toolbar includes a calm trust affordance. It stays visually quiet as **Sourc
 - Local source capability as **Healthy**, **Partial**, **Unavailable**, or **Query incompatible**
 - Field-level **Recorded**, **Inferred**, **Unavailable**, and explicit **Demo decoration** provenance
 - Recorded parent-child coverage versus synthetic display-only containment
-- Selected/total real-session counts, bounded event coverage, current scope, search/grouping visibility, and filter behavior
+- Scope/filter counts, search/focus exclusions, visible real cards, and total real sessions hidden from the canvas
+- Separate repository-grouped, overflow-grouped, completed-shelved, and archived-shelved counts; synthetic summaries never contribute to real-session totals
 - Refresh health, consecutive failed attempts, and the last successful refresh
 - Sanitized limitations without database paths, raw errors, payloads, prompts, messages, secrets, tool arguments, or file contents
 

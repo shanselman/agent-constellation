@@ -51,6 +51,7 @@ import {
     resolveProjectFilter,
     selectConstellationVisibility,
     sessionMatchesSearch,
+    summarizeLayoutVisibility,
     visualParentId,
 } from "./layout.mjs";
 import { renderConstellationHtml } from "./renderer.mjs";
@@ -309,6 +310,40 @@ function scalableFixtureState(
         projects: true,
         scope,
     });
+}
+
+function shelfOnlyFixtureState(scope = "tree", count = 17) {
+    return normalizeConstellation(
+        [
+            {
+                id: "shelf-root",
+                name: "Shelf coordinator",
+                projectId: "project-shelf",
+                projectName: "Shelf project",
+                repository: "octo/shelf",
+                status: "idle",
+            },
+            ...Array.from({ length: count }, (_, index) => ({
+                id: `shelved-${index}`,
+                parentId: "shelf-root",
+                name: `Shelved session ${index}`,
+                projectId: "project-shelf",
+                projectName: "Shelf project",
+                repository: `octo/completed-${index}`,
+                status: "completed",
+                task: index === 0 ? "Focused completed target" : undefined,
+            })),
+        ],
+        "shelf-root",
+        {
+            appDatabase: true,
+            sessionStore: true,
+            eventMetadata: true,
+            relationships: true,
+            projects: true,
+            scope,
+        }
+    );
 }
 
 function homeChatFixtureState(totalSessions = 600) {
@@ -1434,6 +1469,298 @@ test("expanded repository groups persist and selection never dissolves them", ()
     assert.equal(expandedIds.has(groupId), true);
 });
 
+test("shelf-only compaction reports 17 hidden real sessions across tree, all, and project scopes", () => {
+    const states = [
+        shelfOnlyFixtureState("tree"),
+        shelfOnlyFixtureState("all"),
+        filterConstellationState(shelfOnlyFixtureState("all"), {
+            project: "project-shelf",
+        }),
+    ];
+    for (const state of states) {
+        const layout = layoutResponsiveConstellation(state, {
+            width: 480,
+            height: 900,
+        });
+        assert.deepEqual(layout.visibilityDiagnostics, {
+            scopeFilteredRealSessionCount: 18,
+            selectedRealSessionCount: 18,
+            excludedBySearchOrFocusCount: 0,
+            visibleRealSessionCount: 1,
+            groupedHiddenSessionCount: 0,
+            repositoryGroupedHiddenSessionCount: 0,
+            overflowGroupedHiddenSessionCount: 0,
+            completedShelvedSessionCount: 17,
+            archivedShelvedSessionCount: 0,
+            totalHiddenRealSessionCount: 17,
+        });
+        assert.deepEqual(
+            layout.diagnostics.visibility.compaction,
+            layout.visibilityDiagnostics
+        );
+        assert.equal(layout.hiddenSessionCount, 17);
+        assert.equal(layout.nodes.some((node) => node.isShelf), true);
+        assert.equal(
+            layout.nodes.filter(
+                (node) =>
+                    !node.synthetic &&
+                    !node.isShelf &&
+                    !node.isRepositoryGroup &&
+                    !node.isOverflowSummary
+            ).length,
+            1
+        );
+        assert.equal(
+            layout.visibilityDiagnostics.visibleRealSessionCount +
+                layout.visibilityDiagnostics.totalHiddenRealSessionCount,
+            layout.visibilityDiagnostics.selectedRealSessionCount
+        );
+    }
+});
+
+test("mixed repository grouping and shelves remain additive through expansion", () => {
+    const state = normalizeConstellation(
+        [
+            {
+                id: "mixed-root",
+                name: "Mixed coordinator",
+                repository: "octo/root",
+                status: "idle",
+            },
+            ...Array.from({ length: 6 }, (_, index) => ({
+                id: `grouped-${index}`,
+                parentId: "mixed-root",
+                name: `Grouped ${index}`,
+                repository: "octo/shared",
+                status: "idle",
+            })),
+            ...Array.from({ length: 4 }, (_, index) => ({
+                id: `done-${index}`,
+                parentId: "mixed-root",
+                name: `Done ${index}`,
+                repository: `octo/done-${index}`,
+                status: "completed",
+            })),
+            ...Array.from({ length: 3 }, (_, index) => ({
+                id: `archive-${index}`,
+                parentId: "mixed-root",
+                name: `Archive ${index}`,
+                repository: `octo/archive-${index}`,
+                status: "archived",
+            })),
+        ],
+        "mixed-root"
+    );
+    const groupId = repositoryGroupId("mixed-root", "octo/shared");
+    const collapsed = layoutResponsiveConstellation(state, {
+        width: 480,
+        height: 900,
+        groupingThreshold: 1,
+        minimumGroupSize: 3,
+        visibleCardBudget: 100,
+    });
+    assert.deepEqual(collapsed.visibilityDiagnostics, {
+        scopeFilteredRealSessionCount: 14,
+        selectedRealSessionCount: 14,
+        excludedBySearchOrFocusCount: 0,
+        visibleRealSessionCount: 1,
+        groupedHiddenSessionCount: 6,
+        repositoryGroupedHiddenSessionCount: 6,
+        overflowGroupedHiddenSessionCount: 0,
+        completedShelvedSessionCount: 4,
+        archivedShelvedSessionCount: 3,
+        totalHiddenRealSessionCount: 13,
+    });
+
+    const groupExpanded = layoutResponsiveConstellation(state, {
+        width: 480,
+        height: 900,
+        groupingThreshold: 1,
+        minimumGroupSize: 3,
+        visibleCardBudget: 100,
+        expandedGroupIds: [groupId],
+    });
+    assert.equal(
+        groupExpanded.visibilityDiagnostics.groupedHiddenSessionCount,
+        0
+    );
+    assert.equal(
+        groupExpanded.visibilityDiagnostics.completedShelvedSessionCount,
+        4
+    );
+    assert.equal(
+        groupExpanded.visibilityDiagnostics.archivedShelvedSessionCount,
+        3
+    );
+    assert.equal(
+        groupExpanded.visibilityDiagnostics.totalHiddenRealSessionCount,
+        7
+    );
+
+    const shelvesExpanded = layoutResponsiveConstellation(state, {
+        width: 480,
+        height: 900,
+        groupingThreshold: 1,
+        minimumGroupSize: 3,
+        visibleCardBudget: 100,
+        expandedGroupIds: [groupId],
+        completedExpanded: true,
+        archivedExpanded: true,
+    });
+    assert.equal(
+        shelvesExpanded.visibilityDiagnostics.totalHiddenRealSessionCount,
+        0
+    );
+    assert.equal(
+        shelvesExpanded.visibilityDiagnostics.visibleRealSessionCount,
+        14
+    );
+    assert.equal(
+        shelvesExpanded.nodes.filter(
+            (node) =>
+                !node.synthetic &&
+                !node.isShelf &&
+                !node.isRepositoryGroup &&
+                !node.isOverflowSummary
+        ).length,
+        14
+    );
+});
+
+test("overflow grouping and shelves report separate hidden components without synthetic counts", () => {
+    const state = normalizeConstellation(
+        [
+            {
+                id: "overflow-root",
+                name: "Overflow coordinator",
+                repository: "octo/root",
+                status: "idle",
+            },
+            ...Array.from({ length: 20 }, (_, index) => ({
+                id: `overflow-real-${index}`,
+                parentId: "overflow-root",
+                name: `Overflow real ${index}`,
+                repository: `octo/unique-${index}`,
+                status: "idle",
+            })),
+            ...Array.from({ length: 4 }, (_, index) => ({
+                id: `overflow-done-${index}`,
+                parentId: "overflow-root",
+                name: `Overflow done ${index}`,
+                repository: `octo/done-${index}`,
+                status: "completed",
+            })),
+        ],
+        "overflow-root"
+    );
+    const layout = layoutResponsiveConstellation(state, {
+        width: 480,
+        height: 900,
+        groupingThreshold: 100,
+        visibleCardBudget: 6,
+        overflowPageSize: 10,
+    });
+    assert.equal(layout.visibilityDiagnostics.selectedRealSessionCount, 25);
+    assert.equal(layout.visibilityDiagnostics.visibleRealSessionCount, 1);
+    assert.equal(
+        layout.visibilityDiagnostics.repositoryGroupedHiddenSessionCount,
+        0
+    );
+    assert.equal(
+        layout.visibilityDiagnostics.overflowGroupedHiddenSessionCount,
+        20
+    );
+    assert.equal(
+        layout.visibilityDiagnostics.completedShelvedSessionCount,
+        4
+    );
+    assert.equal(
+        layout.visibilityDiagnostics.totalHiddenRealSessionCount,
+        24
+    );
+    assert.equal(
+        layout.visibilityDiagnostics.visibleRealSessionCount +
+            layout.visibilityDiagnostics.totalHiddenRealSessionCount,
+        layout.visibilityDiagnostics.selectedRealSessionCount
+    );
+    assert.equal(
+        layout.nodes.some(
+            (node) => node.isShelf || node.isOverflowSummary
+        ),
+        true
+    );
+});
+
+test("filters and focus distinguish excluded sessions from compacted hidden sessions", () => {
+    const source = shelfOnlyFixtureState("all");
+    const filtered = filterConstellationState(source, {
+        status: "completed",
+    });
+    const filteredLayout = layoutResponsiveConstellation(filtered, {
+        width: 480,
+        height: 900,
+    });
+    assert.equal(
+        filteredLayout.visibilityDiagnostics.scopeFilteredRealSessionCount,
+        18
+    );
+    assert.equal(
+        filteredLayout.visibilityDiagnostics.totalHiddenRealSessionCount,
+        17
+    );
+
+    for (const visibleState of [
+        selectConstellationVisibility(source, {
+            search: "focused completed target",
+        }),
+        selectConstellationVisibility(source, {
+            focusSessionId: "shelved-0",
+        }),
+    ]) {
+        const layout = layoutResponsiveConstellation(visibleState, {
+            width: 480,
+            height: 900,
+        });
+        assert.deepEqual(layout.visibilityDiagnostics, {
+            scopeFilteredRealSessionCount: 18,
+            selectedRealSessionCount: 2,
+            excludedBySearchOrFocusCount: 16,
+            visibleRealSessionCount: 2,
+            groupedHiddenSessionCount: 0,
+            repositoryGroupedHiddenSessionCount: 0,
+            overflowGroupedHiddenSessionCount: 0,
+            completedShelvedSessionCount: 0,
+            archivedShelvedSessionCount: 0,
+            totalHiddenRealSessionCount: 0,
+        });
+    }
+
+    assert.deepEqual(
+        summarizeLayoutVisibility(source, {
+            nodes: [
+                {
+                    id: "synthetic",
+                    synthetic: true,
+                    isShelf: true,
+                },
+            ],
+            completedShelvedSessionCount: 17,
+        }),
+        {
+            scopeFilteredRealSessionCount: 18,
+            selectedRealSessionCount: 18,
+            excludedBySearchOrFocusCount: 0,
+            visibleRealSessionCount: 0,
+            groupedHiddenSessionCount: 0,
+            repositoryGroupedHiddenSessionCount: 0,
+            overflowGroupedHiddenSessionCount: 0,
+            completedShelvedSessionCount: 17,
+            archivedShelvedSessionCount: 0,
+            totalHiddenRealSessionCount: 17,
+        }
+    );
+});
+
 test("dense grouping compacts attention while explicit and searched targets retain real edges", () => {
     const source = scalableFixtureState(121, 8);
     const layout = layoutResponsiveConstellation(source, {
@@ -1720,6 +2047,11 @@ test("responsive layout is right-pane-first across required breakpoints", () => 
         assert.equal(layout.orientation, orientation);
         assert.equal(layout.completedCount, 12);
         assert.equal(layout.archivedCount, 5);
+        assert.equal(layout.completedShelvedSessionCount, 12);
+        assert.equal(layout.archivedShelvedSessionCount, 5);
+        assert.equal(layout.groupedHiddenSessionCount, 0);
+        assert.equal(layout.totalHiddenRealSessionCount, 17);
+        assert.equal(layout.hiddenSessionCount, 17);
         assert.equal(layout.nodes.some((node) => node.id === completedShelfId), true);
         assert.equal(layout.nodes.some((node) => node.id === archivedShelfId), true);
         assert.equal(layout.nodes.some((node) => node.id === "completed-0"), false);
@@ -1766,6 +2098,9 @@ test("responsive layout is right-pane-first across required breakpoints", () => 
     });
     assert.equal(expanded.completedCount, 12);
     assert.equal(expanded.archivedCount, 5);
+    assert.equal(expanded.completedShelvedSessionCount, 0);
+    assert.equal(expanded.archivedShelvedSessionCount, 5);
+    assert.equal(expanded.totalHiddenRealSessionCount, 5);
     assert.equal(expanded.nodes.some((node) => node.id === completedShelfId), true);
     assert.equal(expanded.nodes.some((node) => node.id === archivedShelfId), true);
     assert.equal(
@@ -1796,6 +2131,9 @@ test("responsive layout is right-pane-first across required breakpoints", () => 
         ).length,
         0
     );
+    assert.equal(archivedExpanded.completedShelvedSessionCount, 12);
+    assert.equal(archivedExpanded.archivedShelvedSessionCount, 0);
+    assert.equal(archivedExpanded.totalHiddenRealSessionCount, 12);
 
     const wide = layoutResponsiveConstellation(source, { width: 1200, height: 700 });
     assert.equal(wide.orientation, "horizontal");
@@ -2832,6 +3170,19 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     );
     assert.match(html, /Synthetic edges do not assert provenance/);
     assert.match(html, /Repository is an additive display filter/);
+    assert.match(html, /"Search and visibility"/);
+    assert.match(html, /"Compaction"/);
+    assert.match(html, /totalHiddenRealSessionCount/);
+    assert.match(html, /groupedHiddenSessionCount/);
+    assert.match(html, /repositoryGroupedHiddenSessionCount/);
+    assert.match(html, /overflowGroupedHiddenSessionCount/);
+    assert.match(html, /completedShelvedSessionCount/);
+    assert.match(html, /archivedShelvedSessionCount/);
+    assert.match(html, /Synthetic summaries are excluded/);
+    assert.match(
+        html,
+        /state\.layout\.hiddenSessionCount \+ " hidden"/
+    );
     assert.match(html, /Sensitive content is not returned/);
     assert.match(html, /aria-hidden="true"/);
     assert.match(html, /function closeInspector/);

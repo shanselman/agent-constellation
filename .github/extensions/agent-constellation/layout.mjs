@@ -1305,6 +1305,67 @@ export function orientationForSize(
     return landscapePane && boundedTree ? "horizontal" : "vertical";
 }
 
+export function summarizeLayoutVisibility(
+    state,
+    {
+        nodes = [],
+        repositoryGroupedHiddenSessionCount = 0,
+        overflowGroupedHiddenSessionCount = 0,
+        completedShelvedSessionCount = 0,
+        archivedShelvedSessionCount = 0,
+    } = {}
+) {
+    const realInputNodes = (state?.nodes ?? []).filter(
+        (node) => !node.synthetic
+    );
+    const visibleRealSessionCount = nodes.filter(
+        (node) =>
+            !node.synthetic &&
+            !node.isShelf &&
+            !node.isRepositoryGroup &&
+            !node.isOverflowSummary
+    ).length;
+    const nonNegativeCount = (value) =>
+        Math.max(0, Math.floor(Number(value) || 0));
+    const repositoryGrouped = nonNegativeCount(
+        repositoryGroupedHiddenSessionCount
+    );
+    const overflowGrouped = nonNegativeCount(
+        overflowGroupedHiddenSessionCount
+    );
+    const completedShelved = nonNegativeCount(
+        completedShelvedSessionCount
+    );
+    const archivedShelved = nonNegativeCount(
+        archivedShelvedSessionCount
+    );
+    const groupedHiddenSessionCount =
+        repositoryGrouped + overflowGrouped;
+    const totalHiddenRealSessionCount =
+        groupedHiddenSessionCount +
+        completedShelved +
+        archivedShelved;
+    const scopeFilteredRealSessionCount = nonNegativeCount(
+        state?.diagnostics?.selectedRealSessionCount
+    );
+    const selectedRealSessionCount = realInputNodes.length;
+    return {
+        scopeFilteredRealSessionCount,
+        selectedRealSessionCount,
+        excludedBySearchOrFocusCount: Math.max(
+            0,
+            scopeFilteredRealSessionCount - selectedRealSessionCount
+        ),
+        visibleRealSessionCount,
+        groupedHiddenSessionCount,
+        repositoryGroupedHiddenSessionCount: repositoryGrouped,
+        overflowGroupedHiddenSessionCount: overflowGrouped,
+        completedShelvedSessionCount: completedShelved,
+        archivedShelvedSessionCount: archivedShelved,
+        totalHiddenRealSessionCount,
+    };
+}
+
 export function layoutResponsiveConstellation(
     state,
     {
@@ -1407,6 +1468,18 @@ export function layoutResponsiveConstellation(
     const visibleRepositoryHiddenSessionCount = compacted.nodes
         .filter((node) => node.isRepositoryGroup)
         .reduce((sum, node) => sum + (Number(node.hiddenCount) || 0), 0);
+    const visibilityDiagnostics = summarizeLayoutVisibility(state, {
+        nodes: layout.nodes,
+        repositoryGroupedHiddenSessionCount:
+            visibleRepositoryHiddenSessionCount,
+        overflowGroupedHiddenSessionCount: compacted.hiddenSessionCount,
+        completedShelvedSessionCount: completedExpanded
+            ? 0
+            : completedCount,
+        archivedShelvedSessionCount: archivedExpanded
+            ? 0
+            : archivedCount,
+    });
     return {
         ...layout,
         edges,
@@ -1417,9 +1490,25 @@ export function layoutResponsiveConstellation(
         groupCount: grouped.groupCount,
         overflowCount: compacted.overflowCount,
         hiddenSessionCount:
-            visibleRepositoryHiddenSessionCount + compacted.hiddenSessionCount,
+            visibilityDiagnostics.totalHiddenRealSessionCount,
+        groupedHiddenSessionCount:
+            visibilityDiagnostics.groupedHiddenSessionCount,
         repositoryHiddenSessionCount: visibleRepositoryHiddenSessionCount,
         overflowHiddenSessionCount: compacted.hiddenSessionCount,
+        completedShelvedSessionCount:
+            visibilityDiagnostics.completedShelvedSessionCount,
+        archivedShelvedSessionCount:
+            visibilityDiagnostics.archivedShelvedSessionCount,
+        totalHiddenRealSessionCount:
+            visibilityDiagnostics.totalHiddenRealSessionCount,
+        visibilityDiagnostics,
+        diagnostics: {
+            ...state.diagnostics,
+            visibility: {
+                ...state.diagnostics?.visibility,
+                compaction: visibilityDiagnostics,
+            },
+        },
         visibleCardBudget: compacted.visibleCardBudget,
         budgetExceeded: compacted.budgetExceeded,
         protectedIds: [...protectedIds],
