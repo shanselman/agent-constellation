@@ -21,6 +21,7 @@ import {
     applyPinchGesture,
     completedShelfId,
     filterConstellationView,
+    filteredProjectRootId,
     fitWidthScale,
     formatModelLabel,
     layoutResponsiveConstellation,
@@ -159,6 +160,7 @@ function multiProjectFixtureState(
         nodes.push(
             {
                 id: "project-a-root",
+                parentId: "project-b-root",
                 name: "Project A root",
                 projectId: "project-a",
                 projectName: projectAName,
@@ -184,6 +186,57 @@ function multiProjectFixtureState(
         projects: true,
         scope,
     });
+}
+
+function crossProjectFixtureState(scope = "tree") {
+    return normalizeConstellation(
+        [
+            {
+                id: "foreign-root",
+                name: "Foreign coordinator",
+                projectId: "project-b",
+                projectName: "Project B",
+                repository: "octo/b",
+                status: "idle",
+            },
+            {
+                id: "a-waiting",
+                parentId: "foreign-root",
+                name: "Waiting child",
+                projectId: "project-a",
+                projectName: "Project A",
+                repository: "octo/a",
+                status: "waiting-user",
+            },
+            {
+                id: "a-busy",
+                parentId: "a-waiting",
+                name: "Busy grandchild",
+                projectId: "project-a",
+                projectName: "Project A",
+                repository: "octo/a",
+                status: "busy",
+            },
+            {
+                id: "a-idle",
+                parentId: "foreign-root",
+                name: "Idle sibling",
+                projectId: "project-a",
+                projectName: "Project A",
+                repository: "octo/a",
+                status: "idle",
+            },
+        ],
+        "a-busy",
+        {
+            appDatabase: true,
+            sessionStore: true,
+            eventMetadata: true,
+            relationships: true,
+            projects: true,
+            scope,
+        }
+    );
 }
 
 test("normalization sanitizes metadata and layout is deterministic", () => {
@@ -582,6 +635,20 @@ test("project filters resolve IDs and names case-insensitively and fail closed",
             filtered.diagnostics.projectFilter.effectiveProjectId,
             "project-a"
         );
+        const reattached = filtered.nodes.find(
+            (node) => node.id === "project-a-root"
+        );
+        assert.equal(reattached.parentId, "project-b-root");
+        assert.equal(reattached.syntheticParentId, overviewRootId);
+        assert.deepEqual(
+            filtered.edges.find((edge) => edge.target === "project-a-root"),
+            {
+                source: overviewRootId,
+                target: "project-a-root",
+                kind: "containment",
+                synthetic: true,
+            }
+        );
     }
 
     const unknown = filterConstellationState(state, {
@@ -620,6 +687,158 @@ test("project filters resolve IDs and names case-insensitively and fail closed",
         resolveProjectFilter(ambiguousState.projects, "project a").status,
         "ambiguous"
     );
+});
+
+test("project filtering reattaches cross-project descendants for every layout", () => {
+    for (const scope of ["tree", "all"]) {
+        const source = crossProjectFixtureState(scope);
+        const filtered = filterConstellationState(source, {
+            project: "Project A",
+        });
+        const expectedRootId =
+            scope === "all" ? overviewRootId : filteredProjectRootId;
+        assert.equal(filtered.rootId, expectedRootId);
+        assert.equal(filtered.currentSessionId, "a-busy");
+        assert.equal(filtered.diagnostics.selectedRealSessionCount, 3);
+        assert.equal(filtered.diagnostics.independentRealRootCount, 2);
+        assert.equal(
+            Object.values(filtered.counts).reduce((sum, count) => sum + count, 0),
+            3
+        );
+        assert.equal(filtered.counts["waiting-user"], 1);
+        assert.equal(
+            filtered.nodes.some((node) => node.id === "foreign-root"),
+            false
+        );
+        for (const id of ["a-waiting", "a-idle"]) {
+            const node = filtered.nodes.find((item) => item.id === id);
+            assert.equal(node.parentId, "foreign-root");
+            assert.equal(node.syntheticParentId, expectedRootId);
+            assert.deepEqual(
+                filtered.edges.find((edge) => edge.target === id),
+                {
+                    source: expectedRootId,
+                    target: id,
+                    kind: "containment",
+                    synthetic: true,
+                }
+            );
+        }
+        assert.deepEqual(
+            filtered.edges.find((edge) => edge.target === "a-busy"),
+            {
+                source: "a-waiting",
+                target: "a-busy",
+                kind: "parent-child",
+                synthetic: false,
+            }
+        );
+
+        for (const [width, height, orientation] of [
+            [1200, 700, "horizontal"],
+            [420, 900, "vertical"],
+        ]) {
+            const layout = layoutResponsiveConstellation(filtered, {
+                width,
+                height,
+                completedExpanded: true,
+            });
+            assert.equal(layout.orientation, orientation);
+            assert.equal(
+                layout.nodes.filter((node) => !node.synthetic).length,
+                filtered.diagnostics.selectedRealSessionCount
+            );
+            assert.equal(
+                layout.nodes.some(
+                    (node) => node.id === "a-waiting" && node.status === "waiting-user"
+                ),
+                true
+            );
+            assert.equal(
+                layout.nodes.some((node) => node.id === "foreign-root"),
+                false
+            );
+        }
+    }
+});
+
+test("cross-project project scopes remain rooted across refresh and reopen", async () => {
+    const servers = new Map();
+    const provider = async ({ scope } = {}) => crossProjectFixtureState(scope);
+    const options = (scope) => ({
+        dataProvider: provider,
+        initialScope: scope,
+        initialProject: "Project A",
+        pollIntervalMs: 60_000,
+    });
+    try {
+        const [tree, all] = await Promise.all([
+            getOrCreateConstellationServer(servers, "cross-tree", options("tree")),
+            getOrCreateConstellationServer(servers, "cross-all", options("all")),
+        ]);
+        for (const entry of [tree, all]) {
+            assert.equal(entry.state.diagnostics.selectedRealSessionCount, 3);
+            assert.equal(
+                entry.state.nodes.some((node) => node.id === "foreign-root"),
+                false
+            );
+            const horizontal = layoutResponsiveConstellation(entry.state, {
+                width: 1200,
+                height: 700,
+            });
+            assert.equal(
+                horizontal.nodes.filter((node) => !node.synthetic).length,
+                3
+            );
+            assert.equal(
+                horizontal.nodes.some(
+                    (node) => node.id === "a-waiting" && node.status === "waiting-user"
+                ),
+                true
+            );
+        }
+
+        await Promise.all([
+            refreshConstellationServer(tree),
+            refreshConstellationServer(all),
+        ]);
+        assert.equal(tree.state.diagnostics.selectedRealSessionCount, 3);
+        assert.equal(all.state.diagnostics.selectedRealSessionCount, 3);
+
+        const [treeReopened, allReopened] = await Promise.all([
+            getOrCreateConstellationServer(servers, "cross-tree", {
+                ...options("tree"),
+                initialProject: "",
+            }),
+            getOrCreateConstellationServer(servers, "cross-all", {
+                ...options("all"),
+                initialProject: "",
+            }),
+        ]);
+        assert.equal(treeReopened, tree);
+        assert.equal(allReopened, all);
+        assert.equal(treeReopened.projectScope.id, "project-a");
+        assert.equal(allReopened.projectScope.id, "project-a");
+        assert.equal(
+            layoutResponsiveConstellation(treeReopened.state, {
+                width: 1200,
+                height: 700,
+            }).nodes.filter((node) => !node.synthetic).length,
+            3
+        );
+        assert.equal(
+            layoutResponsiveConstellation(allReopened.state, {
+                width: 1200,
+                height: 700,
+            }).nodes.filter((node) => !node.synthetic).length,
+            3
+        );
+    } finally {
+        await Promise.all([
+            closeConstellationServer(servers, "cross-tree"),
+            closeConstellationServer(servers, "cross-all"),
+        ]);
+    }
 });
 
 test("responsive layout uses vertical mission-control columns and collapses completed agents", () => {
@@ -1219,6 +1438,7 @@ test("simultaneous canvas instances keep scope and filters isolated across refre
         assert.equal(project.scope, "all");
         assert.equal(project.projectScope.id, "project-a");
         assert.equal(project.projectScope.status, "resolved");
+        assert.equal(project.state.currentSessionId, undefined);
         assert.deepEqual(
             project.state.nodes
                 .filter((node) => !node.synthetic)
@@ -1229,6 +1449,13 @@ test("simultaneous canvas instances keep scope and filters isolated across refre
         assert.equal(
             project.state.nodes.some((node) => node.id === "project-b-root"),
             false
+        );
+        assert.equal(
+            layoutResponsiveConstellation(project.state, {
+                width: 1200,
+                height: 700,
+            }).nodes.filter((node) => !node.synthetic).length,
+            project.state.diagnostics.selectedRealSessionCount
         );
         assert.equal(unknownProject.state.nodes.length, 0);
         assert.equal(unknownProject.projectScope.status, "unknown");
@@ -1269,6 +1496,13 @@ test("simultaneous canvas instances keep scope and filters isolated across refre
         assert.equal(project.projectScope.id, "project-a");
         assert.equal(project.projectScope.name, "Project A Renamed");
         assert.equal(project.state.diagnostics.selectedRealSessionCount, 2);
+        assert.equal(
+            layoutResponsiveConstellation(project.state, {
+                width: 1200,
+                height: 700,
+            }).nodes.filter((node) => !node.synthetic).length,
+            2
+        );
         assert.equal(unknownProject.state.nodes.length, 0);
         assert.equal(tree.scope, "tree");
         assert.equal(tree.state.diagnostics.effectiveScope, "tree");
@@ -1355,6 +1589,9 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     assert.match(html, /"aria-hidden": "true"/);
     assert.match(html, /Ambiguous project filter/);
     assert.match(html, /Project unavailable/);
+    assert.match(html, /elements\.projectFilter\.disabled = Boolean\(scopedProject\?\.requested\)/);
+    assert.match(html, /The project name is ambiguous\. Use its project ID\./);
+    assert.match(html, /The selected project is unavailable\./);
     assert.match(html, /async function switchScope/);
     assert.match(html, /scope change failed/i);
     assert.match(html, /Mission status counts/);

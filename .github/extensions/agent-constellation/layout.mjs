@@ -1,4 +1,5 @@
 const completedShelfId = "__agent_constellation_completed__";
+const filteredProjectRootId = "__agent_constellation_project_scope__";
 
 const acronymLabels = new Map([
     ["ai", "AI"],
@@ -175,6 +176,8 @@ export function filterConstellationView(
     if (!realMatches.length) {
         return {
             ...state,
+            rootId: undefined,
+            currentSessionId: undefined,
             nodes: [],
             edges: [],
             counts: filteredCounts([], Object.keys(state.counts ?? {})),
@@ -183,6 +186,7 @@ export function filterConstellationView(
             diagnostics: {
                 ...state.diagnostics,
                 selectedRealSessionCount: 0,
+                independentRealRootCount: 0,
                 projectFilter,
             },
         };
@@ -227,28 +231,95 @@ export function filterConstellationView(
         }
     }
 
-    const nodes = state.nodes.filter((node) => keep.has(node.id));
-    const nodeIds = new Set(nodes.map((node) => node.id));
-    const rootId = nodeIds.has(state.rootId)
-        ? state.rootId
-        : nodes.find((node) => {
-              const parentId = visualParentId(node);
-              return !parentId || !nodeIds.has(parentId);
-          })?.id;
+    let nodes = state.nodes.filter((node) => keep.has(node.id));
+    let rootId;
+    let edges;
+    if (projectResolution.requested) {
+        const retainedSyntheticRoot = nodes.find(
+            (node) => node.id === state.rootId && node.synthetic
+        );
+        const rootNode =
+            retainedSyntheticRoot ??
+            {
+                id: filteredProjectRootId,
+                name: projectResolution.name
+                    ? `${projectResolution.name} sessions`
+                    : "Project sessions",
+                repository: "Project scope",
+                projectId: projectResolution.id,
+                projectName: projectResolution.name || "Project scope",
+                status: "idle",
+                nodeType: "project-overview",
+                synthetic: true,
+            };
+        const retainedIds = new Set(nodes.map((node) => node.id));
+        retainedIds.add(rootNode.id);
+        nodes = [
+            rootNode,
+            ...nodes
+                .filter((node) => node.id !== rootNode.id)
+                .map((node) => {
+                    if (node.synthetic) return node;
+                    const parentId = visualParentId(node);
+                    return parentId && retainedIds.has(parentId)
+                        ? node
+                        : { ...node, syntheticParentId: rootNode.id };
+                }),
+        ];
+        rootId = rootNode.id;
+        const nodeIds = new Set(nodes.map((node) => node.id));
+        edges = state.edges.filter(
+            (edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)
+        );
+        const edgeKeys = new Set(
+            edges.map((edge) => `${edge.source}\u0000${edge.target}`)
+        );
+        for (const node of nodes) {
+            if (!node.synthetic && node.syntheticParentId === rootId) {
+                const key = `${rootId}\u0000${node.id}`;
+                if (!edgeKeys.has(key)) {
+                    edges.push({
+                        source: rootId,
+                        target: node.id,
+                        kind: "containment",
+                        synthetic: true,
+                    });
+                    edgeKeys.add(key);
+                }
+            }
+        }
+    } else {
+        const nodeIds = new Set(nodes.map((node) => node.id));
+        rootId = nodeIds.has(state.rootId)
+            ? state.rootId
+            : nodes.find((node) => {
+                  const parentId = visualParentId(node);
+                  return !parentId || !nodeIds.has(parentId);
+              })?.id;
+        edges = state.edges.filter(
+            (edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)
+        );
+    }
     const realNodes = nodes.filter((node) => !node.synthetic);
+    const realNodeIds = new Set(realNodes.map((node) => node.id));
+    const independentRealRootCount = realNodes.filter(
+        (node) => !node.parentId || !realNodeIds.has(node.parentId)
+    ).length;
     return {
         ...state,
         rootId,
+        currentSessionId: realNodeIds.has(state.currentSessionId)
+            ? state.currentSessionId
+            : undefined,
         nodes,
-        edges: state.edges.filter(
-            (edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)
-        ),
+        edges,
         counts: filteredCounts(realNodes, Object.keys(state.counts ?? {})),
         repositories: [...new Set(realNodes.map((node) => node.repository))].sort(),
         projects: filteredProjects(realNodes),
         diagnostics: {
             ...state.diagnostics,
             selectedRealSessionCount: realNodes.length,
+            independentRealRootCount,
             projectFilter,
         },
     };
@@ -568,4 +639,4 @@ export function applyPinchGesture({
     };
 }
 
-export { completedShelfId };
+export { completedShelfId, filteredProjectRootId };

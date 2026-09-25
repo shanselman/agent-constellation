@@ -700,8 +700,16 @@ export function renderConstellationHtml(config) {
     }
 
     function renderProjects() {
-      const current = state.project;
-      elements.projectFilter.replaceChildren(new Option("All projects", ""));
+      const scopedProject = state.data.diagnostics?.projectFilter;
+      const current = state.project ||
+        scopedProject?.effectiveProjectId ||
+        scopedProject?.requested ||
+        "";
+      elements.projectFilter.replaceChildren();
+      elements.projectFilter.disabled = Boolean(scopedProject?.requested);
+      if (!scopedProject?.requested) {
+        elements.projectFilter.add(new Option("All projects", ""));
+      }
       (state.data.projects || []).forEach((project) => {
         const value = project.id || project.name;
         const duplicateName = (state.data.projects || []).filter(
@@ -936,7 +944,8 @@ export function renderConstellationHtml(config) {
     function render() {
       if (!state.data) return;
       const size = stageSize();
-      state.layout = layoutResponsiveConstellation(filteredState(), {
+      const visibleState = filteredState();
+      state.layout = layoutResponsiveConstellation(visibleState, {
         width: size.width,
         height: size.height,
         completedExpanded: state.completedExpanded
@@ -946,6 +955,12 @@ export function renderConstellationHtml(config) {
       renderNodes();
       renderLegend();
       updateSummary();
+      const projectFilter = visibleState?.diagnostics?.projectFilter;
+      elements.empty.textContent = projectFilter?.status === "ambiguous"
+        ? "The project name is ambiguous. Use its project ID."
+        : projectFilter?.status === "unknown"
+          ? "The selected project is unavailable."
+          : "No live sessions match these filters.";
       elements.empty.style.display = state.layout.nodes.length ? "none" : "grid";
       applyTransform();
       if (state.firstRender) {
