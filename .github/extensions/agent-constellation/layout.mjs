@@ -43,6 +43,13 @@ function clamp(value, minimum, maximum) {
     return Math.max(minimum, Math.min(maximum, value));
 }
 
+export function programmaticScrollBehavior({
+    smooth = true,
+    reducedMotion = false,
+} = {}) {
+    return smooth && !reducedMotion ? "smooth" : "auto";
+}
+
 export function cardMarkerLayout(cardWidth, cardHeight) {
     const width = Math.max(120, Number(cardWidth) || 0);
     const height = Math.max(56, Number(cardHeight) || 0);

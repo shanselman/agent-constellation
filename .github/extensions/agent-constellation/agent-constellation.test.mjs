@@ -29,6 +29,7 @@ import {
     formatModelLabel,
     layoutResponsiveConstellation,
     orientationForSize,
+    programmaticScrollBehavior,
     resolveProjectFilter,
 } from "./layout.mjs";
 import { renderConstellationHtml } from "./renderer.mjs";
@@ -1143,6 +1144,7 @@ test("pinch gesture zooms around the moving midpoint", () => {
         currentA: { x: 10, y: 20 },
         currentB: { x: 210, y: 20 },
     });
+
     assert.deepEqual(zoomed, { x: 10, y: 20, k: 2 });
 
     const clamped = applyPinchGesture({
@@ -1153,6 +1155,30 @@ test("pinch gesture zooms around the moving midpoint", () => {
         currentB: { x: 51, y: 0 },
     });
     assert.equal(clamped.k, 0.65);
+});
+
+test("programmatic scroll behavior honors normal and reduced motion modes", () => {
+    assert.equal(
+        programmaticScrollBehavior({
+            smooth: true,
+            reducedMotion: false,
+        }),
+        "smooth"
+    );
+    assert.equal(
+        programmaticScrollBehavior({
+            smooth: true,
+            reducedMotion: true,
+        }),
+        "auto"
+    );
+    assert.equal(
+        programmaticScrollBehavior({
+            smooth: false,
+            reducedMotion: false,
+        }),
+        "auto"
+    );
 });
 
 test("collector uses app relationships and gracefully combines safe fallbacks", () => {
@@ -1873,8 +1899,8 @@ test("renderer preserves SVG focus across refreshes and exposes explicit focus r
     assert.match(html, /class: "node-focus-ring"/);
     assert.match(html, /\.node:focus-visible \.node-focus-ring \{ opacity: 1; \}/);
     assert.match(html, /document\.activeElement\?\.classList\?\.contains\("node"\)/);
-    assert.match(html, /CSS\.escape\(focusedId\)/);
-    assert.match(html, /\.focus\(\{ preventScroll: true \}\)/);
+    assert.match(html, /if \(focusedId\) focusNode\(focusedId, \{ reveal: false \}\)/);
+    assert.match(html, /group\.focus\(\{ preventScroll: true \}\)/);
     assert.match(html, /"aria-current": node\.isCurrent \? "true" : undefined/);
 });
 
@@ -1889,6 +1915,18 @@ test("renderer honors reduced motion and forced colors with correct badge contra
     assert.match(html, /animation-duration: \.001ms !important/);
     assert.match(html, /\.edge\.working \{ stroke-dasharray: none; \}/);
     assert.match(html, /\.node-halo \{ display: none; \}/);
+    assert.match(
+        html,
+        /const reducedMotionQuery = window\.matchMedia\("\(prefers-reduced-motion: reduce\)"\)/
+    );
+    assert.match(html, /function focusNode\(nodeId, \{ reveal = true, smooth = true \} = \{\}\)/);
+    assert.match(html, /group\.focus\(\{ preventScroll: true \}\)/);
+    assert.match(html, /group\.scrollIntoView\(\{/);
+    assert.match(
+        html,
+        /behavior: programmaticScrollBehavior\(\{\s*smooth,\s*reducedMotion: reducedMotionQuery\.matches\s*\}\)/
+    );
+    assert.doesNotMatch(html, /behavior: smooth \? "smooth" : "auto"/);
     assert.match(html, /@media \(forced-colors: active\)/);
     assert.match(html, /background: Canvas/);
     assert.match(html, /stroke: Highlight/);

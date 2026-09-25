@@ -567,11 +567,13 @@ export function renderConstellationHtml(config) {
       fitWidthScale,
       formatModelLabel,
       layoutResponsiveConstellation,
+      programmaticScrollBehavior,
       resolveProjectFilter
     } from "./layout.mjs";
 
     const config = ${serializedConfig};
     const svgNs = "http://www.w3.org/2000/svg";
+    const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
     const statusOrder = [
       "waiting-user", "waiting-plan", "blocked", "failed",
       "busy", "idle", "archived", "completed"
@@ -835,8 +837,24 @@ export function renderConstellationHtml(config) {
     function closeInspector({ restoreFocus = true } = {}) {
       elements.inspector.classList.remove("open");
       elements.inspector.setAttribute("aria-hidden", "true");
-      if (restoreFocus && state.selectedId) {
-        elements.nodes.querySelector('[data-id="' + CSS.escape(state.selectedId) + '"]')?.focus();
+      if (restoreFocus && state.selectedId) focusNode(state.selectedId);
+    }
+
+    function focusNode(nodeId, { reveal = true, smooth = true } = {}) {
+      const group = elements.nodes.querySelector(
+        '[data-id="' + CSS.escape(nodeId) + '"]'
+      );
+      if (!group) return;
+      group.focus({ preventScroll: true });
+      if (reveal) {
+        group.scrollIntoView({
+          block: "nearest",
+          inline: "nearest",
+          behavior: programmaticScrollBehavior({
+            smooth,
+            reducedMotion: reducedMotionQuery.matches
+          })
+        });
       }
     }
 
@@ -1142,11 +1160,7 @@ export function renderConstellationHtml(config) {
         elements.nodes.appendChild(group);
       });
       updateSelection();
-      if (focusedId) {
-        elements.nodes.querySelector(
-          '[data-id="' + CSS.escape(focusedId) + '"]'
-        )?.focus({ preventScroll: true });
-      }
+      if (focusedId) focusNode(focusedId, { reveal: false });
     }
 
     function handleNodeKey(event, node) {
@@ -1174,9 +1188,7 @@ export function renderConstellationHtml(config) {
       }).sort((left, right) => left.score - right.score);
       if (scored[0]) {
         event.preventDefault();
-        elements.nodes.querySelector(
-          '[data-id="' + CSS.escape(scored[0].item.id) + '"]'
-        )?.focus();
+        focusNode(scored[0].item.id);
       }
     }
 
@@ -1242,7 +1254,10 @@ export function renderConstellationHtml(config) {
           0,
           target.y * state.transform.k + state.transform.y - size.height / 3
         ),
-        behavior: smooth ? "smooth" : "auto"
+        behavior: programmaticScrollBehavior({
+          smooth,
+          reducedMotion: reducedMotionQuery.matches
+        })
       });
       state.selectedId = target.id;
       updateSelection();
