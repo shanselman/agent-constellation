@@ -50,6 +50,12 @@ export function programmaticScrollBehavior({
     return smooth && !reducedMotion ? "smooth" : "auto";
 }
 
+export function resolveVisibleSelection(nodes, selectedId, fallbackIds = []) {
+    const visibleIds = new Set((nodes ?? []).map((node) => node.id));
+    if (selectedId && visibleIds.has(selectedId)) return selectedId;
+    return fallbackIds.find((id) => id && visibleIds.has(id));
+}
+
 export function cardMarkerLayout(cardWidth, cardHeight) {
     const width = Math.max(120, Number(cardWidth) || 0);
     const height = Math.max(56, Number(cardHeight) || 0);

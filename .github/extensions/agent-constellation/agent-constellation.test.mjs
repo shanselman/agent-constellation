@@ -30,6 +30,7 @@ import {
     layoutResponsiveConstellation,
     orientationForSize,
     programmaticScrollBehavior,
+    resolveVisibleSelection,
     resolveProjectFilter,
 } from "./layout.mjs";
 import { renderConstellationHtml } from "./renderer.mjs";
@@ -1181,6 +1182,39 @@ test("programmatic scroll behavior honors normal and reduced motion modes", () =
     );
 });
 
+test("visible selection survives layout changes and falls back only when removed", () => {
+    const narrow = [
+        { id: "root" },
+        { id: "selected" },
+        { id: "current" },
+    ];
+    const wide = [
+        { id: "current" },
+        { id: "root" },
+        { id: "selected" },
+    ];
+    assert.equal(
+        resolveVisibleSelection(narrow, "selected", ["current", "root"]),
+        "selected"
+    );
+    assert.equal(
+        resolveVisibleSelection(wide, "selected", ["current", "root"]),
+        "selected"
+    );
+    assert.equal(
+        resolveVisibleSelection(
+            [{ id: "root" }, { id: "current" }],
+            "selected",
+            ["current", "root"]
+        ),
+        "current"
+    );
+    assert.equal(
+        resolveVisibleSelection([{ id: "root" }], "selected", ["current", "root"]),
+        "root"
+    );
+});
+
 test("collector uses app relationships and gracefully combines safe fallbacks", () => {
     const scratch = path.join(extensionDir, `.test-artifacts-${randomUUID()}`);
     const appPath = path.join(scratch, "data.db");
@@ -1902,6 +1936,17 @@ test("renderer preserves SVG focus across refreshes and exposes explicit focus r
     assert.match(html, /if \(focusedId\) focusNode\(focusedId, \{ reveal: false \}\)/);
     assert.match(html, /group\.focus\(\{ preventScroll: true \}\)/);
     assert.match(html, /"aria-current": node\.isCurrent \? "true" : undefined/);
+    assert.match(html, /state\.selectedId = resolveVisibleSelection\(/);
+    assert.match(html, /function centerCurrent\(\{ smooth = true, resetZoom = true \} = \{\}\)/);
+    const centerStart = html.indexOf("function centerCurrent");
+    const centerEnd = html.indexOf("function fitReadableWidth", centerStart);
+    const centerBody = html.slice(centerStart, centerEnd);
+    assert.doesNotMatch(centerBody, /state\.selectedId|updateSelection/);
+    assert.match(
+        html,
+        /if \(previousOrientation !== state\.layout\.orientation\) \{\s*centerCurrent\(\{ smooth: false \}\);\s*\}/
+    );
+    assert.match(html, /if \(restoreFocus && state\.selectedId\) focusNode\(state\.selectedId\)/);
 });
 
 test("renderer honors reduced motion and forced colors with correct badge contrast", () => {

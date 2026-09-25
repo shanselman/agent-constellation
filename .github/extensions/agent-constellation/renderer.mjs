@@ -568,6 +568,7 @@ export function renderConstellationHtml(config) {
       formatModelLabel,
       layoutResponsiveConstellation,
       programmaticScrollBehavior,
+      resolveVisibleSelection,
       resolveProjectFilter
     } from "./layout.mjs";
 
@@ -1214,6 +1215,11 @@ export function renderConstellationHtml(config) {
         completedExpanded: state.completedExpanded,
         archivedExpanded: state.archivedExpanded
       });
+      state.selectedId = resolveVisibleSelection(
+        state.layout.nodes,
+        state.selectedId,
+        [state.data.currentSessionId, state.data.rootId]
+      );
       const byId = new Map(state.layout.nodes.map((node) => [node.id, node]));
       renderEdges(byId);
       renderNodes();
@@ -1229,12 +1235,11 @@ export function renderConstellationHtml(config) {
       applyTransform();
       if (state.firstRender) {
         state.firstRender = false;
-        state.selectedId = state.data.currentSessionId;
-        requestAnimationFrame(() => homeCurrent({ smooth: false }));
+        requestAnimationFrame(() => centerCurrent({ smooth: false }));
       }
     }
 
-    function homeCurrent({ smooth = true, resetZoom = true } = {}) {
+    function centerCurrent({ smooth = true, resetZoom = true } = {}) {
       if (!state.layout) return;
       const target =
         state.layout.nodes.find((node) => node.id === state.data.currentSessionId) ||
@@ -1259,8 +1264,6 @@ export function renderConstellationHtml(config) {
           reducedMotion: reducedMotionQuery.matches
         })
       });
-      state.selectedId = target.id;
-      updateSelection();
     }
 
     function fitReadableWidth() {
@@ -1269,7 +1272,7 @@ export function renderConstellationHtml(config) {
       const k = fitWidthScale(size.width, state.layout.width);
       state.transform = { x: 0, y: 0, k };
       applyTransform();
-      homeCurrent({ resetZoom: false });
+      centerCurrent({ resetZoom: false });
     }
 
     function acceptState(next, { announceChanges = false } = {}) {
@@ -1390,7 +1393,7 @@ export function renderConstellationHtml(config) {
     elements.refresh.addEventListener("click", () => refresh(true));
     elements.scopeSelect.value = state.scope;
     elements.scopeSelect.addEventListener("change", () => switchScope(elements.scopeSelect.value));
-    elements.home.addEventListener("click", () => homeCurrent());
+    elements.home.addEventListener("click", () => centerCurrent());
     elements.fitWidth.addEventListener("click", fitReadableWidth);
     elements.zoomIn.addEventListener("click", () => setZoom(state.transform.k * 1.16));
     elements.zoomOut.addEventListener("click", () => setZoom(state.transform.k / 1.16));
@@ -1478,7 +1481,7 @@ export function renderConstellationHtml(config) {
       if (event.key === "-") setZoom(state.transform.k / 1.16);
       if (event.key === "Home") {
         event.preventDefault();
-        homeCurrent();
+        centerCurrent();
       }
     });
 
@@ -1486,7 +1489,9 @@ export function renderConstellationHtml(config) {
       if (!state.data) return;
       const previousOrientation = state.layout?.orientation;
       render();
-      if (previousOrientation !== state.layout.orientation) homeCurrent({ smooth: false });
+      if (previousOrientation !== state.layout.orientation) {
+        centerCurrent({ smooth: false });
+      }
     });
     resizeObserver.observe(elements.stage);
 
