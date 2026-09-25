@@ -1,0 +1,22 @@
+{
+  "name": "agent-constellation",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A live, animated family tree for GitHub Copilot agent sessions",
+  "type": "module",
+  "scripts": {
+    "test": "node --test .github/extensions/agent-constellation/agent-constellation.test.mjs",
+    "check:types": "tsc -p tsconfig.json",
+    "check:syntax": "node scripts/check-syntax.mjs",
+    "check:diff": "git diff --check",
+    "check": "npm run check:syntax && npm run check:types && npm test && npm run check:diff"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "devDependencies": {
+    "@github/copilot-sdk": "1.0.14",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
