@@ -110,6 +110,23 @@ export function renderConstellationHtml(config) {
     .toolbar { display: flex; align-items: center; gap: 4px; margin-left: auto; }
     .toolbar button { min-width: 30px; }
     .toolbar .text-control { min-width: auto; }
+    .export-panel {
+      position: absolute;
+      z-index: 10;
+      top: 46px;
+      right: 8px;
+      width: min(420px, calc(100vw - 16px));
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel-bg);
+      box-shadow: 0 10px 30px rgb(0 0 0 / .3);
+    }
+    .export-panel[hidden] { display: none; }
+    .export-panel h2 { margin: 0 0 6px; font-size: 15px; }
+    .export-panel p { margin: 6px 0; color: var(--muted); font-size: 12px; }
+    .export-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .export-close { margin-left: auto; }
     .filters {
       grid-row: 2;
       display: none;
@@ -340,8 +357,19 @@ export function renderConstellationHtml(config) {
         <button id="zoomOut" type="button" aria-label="Zoom out">−</button>
         <button id="zoomIn" type="button" aria-label="Zoom in">+</button>
         <button id="filtersToggle" type="button" aria-expanded="false" aria-controls="filters">Filter</button>
+        <button id="exportToggle" type="button" aria-expanded="false" aria-controls="exportPanel">Export</button>
       </div>
     </header>
+    <section class="export-panel" id="exportPanel" aria-label="Safe snapshot export" hidden>
+      <h2>Safe snapshot export</h2>
+      <p><strong>Before saving:</strong> exports replace session IDs with snapshot-only aliases and omit machine paths, names, branches, prompts, messages, tasks, raw references, secrets, cookies, page tokens, and raw events.</p>
+      <p>Included fields are limited to topology, status, repository labels, model metadata, mode, and human-gate type. Files are generated locally in this canvas.</p>
+      <div class="export-actions">
+        <button id="exportJson" type="button">Download JSON</button>
+        <button id="exportVisual" type="button">Download visual HTML</button>
+        <button class="export-close" id="exportClose" type="button">Cancel</button>
+      </div>
+    </section>
     <section class="filters" id="filters" aria-label="Constellation filters">
       <label>Status
         <select id="statusFilter">
@@ -386,6 +414,10 @@ export function renderConstellationHtml(config) {
       formatModelLabel,
       layoutResponsiveConstellation
     } from "./layout.mjs";
+    import {
+      buildVisualSnapshot,
+      serializeJsonSnapshot
+    } from "./snapshots.mjs";
 
     const config = ${serializedConfig};
     const svgNs = "http://www.w3.org/2000/svg";
@@ -418,6 +450,7 @@ export function renderConstellationHtml(config) {
     const elements = Object.fromEntries([
       "summary", "refresh", "home", "fitWidth", "zoomOut", "zoomIn",
       "filtersToggle", "filters", "statusFilter", "repoFilter", "legend",
+      "exportToggle", "exportPanel", "exportJson", "exportVisual", "exportClose",
       "stage", "constellation", "viewport", "edges", "nodes", "empty",
       "inspector", "inspectorClose", "detailName", "detailStatus", "details",
       "sourceNote", "live"
@@ -612,6 +645,25 @@ export function renderConstellationHtml(config) {
       if (restoreFocus && state.selectedId) {
         elements.nodes.querySelector('[data-id="' + CSS.escape(state.selectedId) + '"]')?.focus();
       }
+    }
+
+    function closeExport() {
+      elements.exportPanel.hidden = true;
+      elements.exportToggle.setAttribute("aria-expanded", "false");
+      elements.exportToggle.focus();
+    }
+
+    function downloadLocalSnapshot(contents, type, extension) {
+      const blob = new Blob([contents], { type });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "agent-constellation-safe-snapshot." + extension;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      elements.live.textContent = "Safe " + extension.toUpperCase() + " snapshot downloaded locally.";
     }
 
     function updateSelection() {
@@ -1013,6 +1065,29 @@ export function renderConstellationHtml(config) {
       const open = elements.filters.classList.toggle("open");
       elements.filtersToggle.setAttribute("aria-expanded", open ? "true" : "false");
     });
+    elements.exportToggle.addEventListener("click", () => {
+      const open = elements.exportPanel.hidden;
+      elements.exportPanel.hidden = !open;
+      elements.exportToggle.setAttribute("aria-expanded", open ? "true" : "false");
+      if (open) elements.exportJson.focus();
+    });
+    elements.exportClose.addEventListener("click", closeExport);
+    elements.exportJson.addEventListener("click", () => {
+      if (!state.data) return;
+      downloadLocalSnapshot(
+        serializeJsonSnapshot(filteredState()),
+        "application/json;charset=utf-8",
+        "json"
+      );
+    });
+    elements.exportVisual.addEventListener("click", () => {
+      if (!state.data) return;
+      downloadLocalSnapshot(
+        buildVisualSnapshot(filteredState()),
+        "text/html;charset=utf-8",
+        "html"
+      );
+    });
     elements.inspectorClose.addEventListener("click", () => closeInspector());
     elements.statusFilter.value = state.status;
     elements.statusFilter.addEventListener("change", () => {
@@ -1082,6 +1157,10 @@ export function renderConstellationHtml(config) {
       if (event.key === "Escape" && elements.inspector.classList.contains("open")) {
         event.preventDefault();
         closeInspector();
+      }
+      if (event.key === "Escape" && !elements.exportPanel.hidden) {
+        event.preventDefault();
+        closeExport();
       }
       if (event.target.matches("select, button")) return;
       if (event.key === "+" || event.key === "=") setZoom(state.transform.k * 1.16);
