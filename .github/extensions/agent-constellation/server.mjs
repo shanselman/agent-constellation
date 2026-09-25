@@ -133,6 +133,7 @@ export async function refreshConstellationServer(entryOrPromise, { publish = tru
 export async function startConstellationServer({
     dataProvider,
     initialRepository = "",
+    initialSearch = "",
     initialStatus = "",
     pollIntervalMs = 2_000,
     logger,
@@ -179,6 +180,7 @@ export async function startConstellationServer({
                     eventsUrl: `${entry.url}events`,
                     refreshUrl: `${entry.url}refresh`,
                     initialRepository: sanitizeText(initialRepository, 180),
+                    initialSearch: sanitizeText(initialSearch, 180),
                     initialStatus: sanitizeText(initialStatus, 30),
                 });
                 response.writeHead(200, {

@@ -1,6 +1,7 @@
 import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { selectConstellationState } from "./layout.mjs";
 
 export const STATUSES = [
     "busy",
@@ -16,6 +17,7 @@ export const STATUSES = [
 export const FILTER_PROPERTIES = {
     status: { type: "string", enum: STATUSES },
     repository: { type: "string", minLength: 1, maxLength: 180 },
+    search: { type: "string", minLength: 1, maxLength: 180 },
 };
 
 export const CANVAS_OPEN_INPUT_SCHEMA = {
@@ -640,35 +642,8 @@ export function decorateConstellationForDemo(state) {
 export function filterConstellationState(state, input = {}) {
     const status = STATUSES.includes(input?.status) ? input.status : undefined;
     const repository = sanitizeText(input?.repository, 180);
-    if (!status && !repository) return state;
-    const keep = new Set(
-        state.nodes
-            .filter(
-                (node) =>
-                    (!status || node.status === status) &&
-                    (!repository || node.repository.toLowerCase() === repository.toLowerCase())
-            )
-            .map((node) => node.id)
-    );
-    keep.add(state.rootId);
-    keep.add(state.currentSessionId);
-    let changed = true;
-    while (changed) {
-        changed = false;
-        for (const node of state.nodes) {
-            if (keep.has(node.id) && node.parentId && !keep.has(node.parentId)) {
-                keep.add(node.parentId);
-                changed = true;
-            }
-        }
-    }
-    const nodes = state.nodes.filter((node) => keep.has(node.id));
-    const nodeIds = new Set(nodes.map((node) => node.id));
-    return {
-        ...state,
-        nodes,
-        edges: state.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)),
-    };
+    const search = sanitizeText(input?.search, 180);
+    return selectConstellationState(state, { status, repository, search });
 }
 
 export function stateFingerprint(state) {

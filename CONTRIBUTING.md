@@ -29,7 +29,7 @@ After changing extension code:
 2. Open Agent Constellation from a project session.
 3. Verify the `refresh` and `get_state` actions.
 4. Check wide and narrow/tall layouts.
-5. Exercise keyboard navigation, pan, wheel zoom, pinch zoom, filters, the inspector, and the completed shelf as applicable.
+5. Exercise search, lineage focus and reset, keyboard navigation, pan, wheel zoom, pinch zoom, filters, the inspector, and the completed shelf as applicable.
 6. Run `npm run check`.
 
 ## Pull requests

@@ -17,11 +17,15 @@ import {
 } from "./data.mjs";
 import {
     applyPinchGesture,
+    buildFocusSet,
     completedShelfId,
     fitWidthScale,
     formatModelLabel,
     layoutResponsiveConstellation,
+    normalizeSearchQuery,
     orientationForSize,
+    selectConstellationState,
+    sessionMatchesSearch,
 } from "./layout.mjs";
 import { renderConstellationHtml } from "./renderer.mjs";
 import {
@@ -145,6 +149,127 @@ test("normalization sanitizes metadata and layout is deterministic", () => {
         ["busy-child", "root-session", "waiting-grandchild"]
     );
     assert.equal(layoutConstellation([], "missing").nodes.length, 0);
+});
+
+test("search normalization matches sanitized session metadata across supported fields", () => {
+    assert.equal(normalizeSearchQuery("  Résumé/WAITING-user  "), "resume waiting user");
+    assert.equal(normalizeSearchQuery("\u0000Feature\\Focus---Mode"), "feature focus mode");
+    assert.equal(normalizeSearchQuery(undefined), "");
+
+    const node = {
+        name: "Focus Navigation",
+        repository: "shanselman/agent-constellation",
+        branch: "feature/focus-mode",
+        pullRequest: "#42",
+        issue: "octo/repo#17",
+        task: "Improve keyboard orientation",
+        provider: "openai",
+        model: "gpt-5.6-sol-fast",
+        reasoningEffort: "high",
+        status: "waiting-user",
+    };
+    for (const query of [
+        "focus navigation",
+        "agent constellation",
+        "feature focus",
+        "#42",
+        "repo 17",
+        "keyboard orientation",
+        "gpt sol fast",
+        "waiting user",
+        "waiting for user",
+    ]) {
+        assert.equal(sessionMatchesSearch(node, query), true, query);
+    }
+    assert.equal(sessionMatchesSearch(node, "completed"), false);
+});
+
+test("focus set contains selected session, ancestors, and all descendants", () => {
+    const nodes = [
+        { id: "root" },
+        { id: "parent", parentId: "root" },
+        { id: "selected", parentId: "parent" },
+        { id: "child-a", parentId: "selected" },
+        { id: "child-b", parentId: "selected" },
+        { id: "grandchild", parentId: "child-a" },
+        { id: "sibling", parentId: "parent" },
+        { id: "orphan", parentId: "missing" },
+    ];
+    assert.deepEqual(
+        [...buildFocusSet(nodes, "selected")].sort(),
+        ["child-a", "child-b", "grandchild", "parent", "root", "selected"]
+    );
+    assert.deepEqual([...buildFocusSet(nodes, "orphan")], ["orphan"]);
+    assert.deepEqual([...buildFocusSet(nodes, "missing")], []);
+});
+
+test("focus set terminates on cyclic ancestry and descendant edges", () => {
+    const nodes = [
+        { id: "a", parentId: "c" },
+        { id: "b", parentId: "a" },
+        { id: "c", parentId: "b" },
+        { id: "leaf", parentId: "b" },
+    ];
+    assert.deepEqual(
+        [...buildFocusSet(nodes, "b")].sort(),
+        ["a", "b", "c", "leaf"]
+    );
+});
+
+test("search selection preserves matching ancestry and returns empty state for no matches", () => {
+    const state = normalizeConstellation(
+        [
+            { id: "root", name: "Coordinator", repository: "octo/root", status: "idle" },
+            {
+                id: "parent",
+                parentId: "root",
+                name: "Parent",
+                repository: "octo/app",
+                status: "busy",
+            },
+            {
+                id: "match",
+                parentId: "parent",
+                name: "Keyboard focus",
+                repository: "octo/app",
+                model: "gpt-5.6-sol-fast",
+                task: "Improve navigation",
+                status: "waiting-user",
+            },
+            {
+                id: "other",
+                parentId: "root",
+                name: "Other",
+                repository: "octo/other",
+                status: "completed",
+            },
+        ],
+        "root"
+    );
+
+    const searched = selectConstellationState(state, { search: "gpt navigation" });
+    assert.deepEqual(
+        searched.nodes.map((node) => node.id).sort(),
+        ["match", "parent", "root"]
+    );
+    assert.deepEqual(
+        [...searched.edges].sort((left, right) => left.target.localeCompare(right.target)),
+        [
+            { source: "parent", target: "match" },
+            { source: "root", target: "parent" },
+        ]
+    );
+
+    const focused = selectConstellationState(state, { focusSessionId: "parent" });
+    assert.deepEqual(
+        focused.nodes.map((node) => node.id).sort(),
+        ["match", "parent", "root"]
+    );
+
+    const noMatches = selectConstellationState(state, { search: "nonexistent" });
+    assert.deepEqual(noMatches.nodes, []);
+    assert.deepEqual(noMatches.edges, []);
+    assert.deepEqual(filterConstellationState(state, { search: "nonexistent" }).nodes, []);
 });
 
 test("model labels use conservative humanization and optional reasoning effort", () => {
@@ -811,5 +936,22 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     assert.match(html, /applyPinchGesture/);
     assert.match(html, /completedExpanded/);
     assert.match(html, /id="fitWidth"/);
+    assert.match(html, /id="searchInput"/);
+    assert.match(html, /type="search"/);
+    assert.match(html, /aria-describedby="searchHelp"/);
+    assert.match(html, /id="resetFocus"/);
+    assert.match(html, />Show all</);
+    assert.match(html, /id="focusSelected"/);
+    assert.match(html, />Focus lineage</);
+    assert.match(html, /id="keyboardHelp"/);
+    assert.match(html, /Page Up for the parent/);
+    assert.match(html, /aria-posinset/);
+    assert.match(html, /aria-setsize/);
+    assert.match(html, /aria-current/);
+    assert.match(html, /role="status"/);
+    assert.match(html, /function focusLineage/);
+    assert.match(html, /function resetFocus/);
+    assert.match(html, /selectConstellationState/);
+    assert.match(html, /sessionMatchesSearch/);
     assert.doesNotMatch(html, />Fit</);
 });
