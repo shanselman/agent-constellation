@@ -54,7 +54,7 @@ export function renderConstellationHtml(config) {
     .app {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: auto auto minmax(0, 1fr);
+      grid-template-rows: auto auto auto minmax(0, 1fr);
       height: 100vh;
     }
     .chrome {
@@ -129,8 +129,68 @@ export function renderConstellationHtml(config) {
       font-size: 12px;
     }
     select { min-width: 0; max-width: 240px; padding: 4px 24px 4px 7px; }
-    .workspace {
+    .attention-radar {
       grid-row: 3;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      min-height: 38px;
+      padding: 4px 8px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel-bg);
+    }
+    .attention-title {
+      margin: 0;
+      font-size: 12px;
+      font-weight: var(--font-weight-semibold, 600);
+      white-space: nowrap;
+    }
+    .attention-summary {
+      color: var(--muted);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .attention-list {
+      display: flex;
+      flex: 1 1 auto;
+      gap: 5px;
+      min-width: 0;
+      margin: 0;
+      padding: 0 1px 2px;
+      overflow-x: auto;
+      list-style: none;
+      scrollbar-width: thin;
+    }
+    .attention-list:empty { display: none; }
+    .attention-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 27px;
+      max-width: 260px;
+      padding: 2px 7px;
+      border-color: color-mix(in srgb, var(--status-color) 62%, var(--border));
+      white-space: nowrap;
+    }
+    .attention-kind {
+      color: var(--status-color);
+      font-size: 10px;
+      font-weight: var(--font-weight-semibold, 600);
+      text-transform: uppercase;
+      letter-spacing: .25px;
+    }
+    .attention-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .attention-age { color: var(--muted); font-size: 10px; }
+    .attention-empty {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .workspace {
+      grid-row: 4;
       display: grid;
       grid-template-rows: minmax(0, 1fr) auto;
       min-width: 0;
@@ -311,6 +371,8 @@ export function renderConstellationHtml(config) {
       .filters.open { align-items: stretch; flex-direction: column; }
       .filters label { display: grid; grid-template-columns: 70px minmax(0, 1fr); }
       select { max-width: none; width: 100%; }
+      .attention-summary { display: none; }
+      .attention-item { max-width: 210px; }
       dl { grid-template-columns: 1fr; gap: 1px; }
       dd { margin-bottom: 4px; }
     }
@@ -360,6 +422,12 @@ export function renderConstellationHtml(config) {
         <select id="repoFilter"><option value="">All repositories</option></select>
       </label>
     </section>
+    <section class="attention-radar" aria-labelledby="attentionTitle">
+      <h2 class="attention-title" id="attentionTitle">Needs attention</h2>
+      <span class="attention-summary" id="attentionSummary"></span>
+      <ul class="attention-list" id="attentionList"></ul>
+      <span class="attention-empty" id="attentionEmpty">Nothing needs attention right now.</span>
+    </section>
     <main class="workspace">
       <section class="stage" id="stage" aria-label="Agent family tree">
         <svg id="constellation" role="tree" aria-label="Copilot project session constellation">
@@ -386,6 +454,7 @@ export function renderConstellationHtml(config) {
       formatModelLabel,
       layoutResponsiveConstellation
     } from "./layout.mjs";
+    import { getAttentionItems } from "./attention.mjs";
 
     const config = ${serializedConfig};
     const svgNs = "http://www.w3.org/2000/svg";
@@ -418,6 +487,7 @@ export function renderConstellationHtml(config) {
     const elements = Object.fromEntries([
       "summary", "refresh", "home", "fitWidth", "zoomOut", "zoomIn",
       "filtersToggle", "filters", "statusFilter", "repoFilter", "legend",
+      "attentionSummary", "attentionList", "attentionEmpty",
       "stage", "constellation", "viewport", "edges", "nodes", "empty",
       "inspector", "inspectorClose", "detailName", "detailStatus", "details",
       "sourceNote", "live"
@@ -470,6 +540,13 @@ export function renderConstellationHtml(config) {
       return node.status === "busy" && node.busySince
         ? base + " · " + elapsed(node.busySince)
         : base;
+    }
+
+    function compactAge(ageMs) {
+      if (!Number.isFinite(ageMs) || ageMs < 60000) return "now";
+      const minutes = Math.floor(ageMs / 60000);
+      if (minutes < 60) return minutes + "m";
+      return Math.floor(minutes / 60) + "h";
     }
 
     function filteredState() {
@@ -671,6 +748,72 @@ export function renderConstellationHtml(config) {
       });
       elements.repoFilter.value = state.data.repositories.includes(current) ? current : "";
       state.repository = elements.repoFilter.value;
+    }
+
+    function focusAttentionNode(nodeId) {
+      const sourceNode = state.data?.nodes.find((node) => node.id === nodeId);
+      if (!sourceNode) return;
+      state.status = "";
+      state.repository = "";
+      elements.statusFilter.value = "";
+      elements.repoFilter.value = "";
+      if (sourceNode.status === "completed") state.completedExpanded = true;
+      render();
+      const node = state.layout?.nodes.find((item) => item.id === nodeId);
+      if (!node) return;
+      openInspector(node, true);
+      requestAnimationFrame(() => {
+        const target = elements.nodes.querySelector(
+          '[data-id="' + CSS.escape(nodeId) + '"]'
+        );
+        target?.focus();
+        const size = stageSize();
+        elements.stage.scrollTo({
+          left: Math.max(
+            0,
+            node.x * state.transform.k + state.transform.x - size.width / 2
+          ),
+          top: Math.max(
+            0,
+            node.y * state.transform.k + state.transform.y - size.height / 3
+          ),
+          behavior: "smooth"
+        });
+      });
+    }
+
+    function renderAttention() {
+      const items = getAttentionItems(state.data?.nodes, Date.now());
+      elements.attentionList.replaceChildren();
+      elements.attentionSummary.textContent = items.length
+        ? items.length + " prioritized"
+        : "Clear";
+      elements.attentionEmpty.hidden = items.length > 0;
+      items.forEach((item) => {
+        const listItem = document.createElement("li");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "attention-item status-" + item.status;
+        button.setAttribute(
+          "aria-label",
+          item.label + ": " + item.name +
+            (item.repository ? ", " + item.repository : "") +
+            ". Open session details."
+        );
+        const kind = document.createElement("span");
+        kind.className = "attention-kind";
+        kind.textContent = item.label;
+        const name = document.createElement("span");
+        name.className = "attention-name";
+        name.textContent = item.name;
+        const age = document.createElement("span");
+        age.className = "attention-age";
+        age.textContent = compactAge(item.ageMs);
+        button.append(kind, name, age);
+        button.addEventListener("click", () => focusAttentionNode(item.id));
+        listItem.appendChild(button);
+        elements.attentionList.appendChild(listItem);
+      });
     }
 
     function edgePath(edge, byId) {
@@ -882,6 +1025,7 @@ export function renderConstellationHtml(config) {
       renderEdges(byId);
       renderNodes();
       renderLegend();
+      renderAttention();
       updateSummary();
       elements.empty.style.display = state.layout.nodes.length ? "none" : "grid";
       applyTransform();

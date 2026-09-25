@@ -6,6 +6,11 @@ import path from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import {
+    RECENT_COMPLETION_THRESHOLD_MS,
+    STALE_BUSY_THRESHOLD_MS,
+    getAttentionItems,
+} from "./attention.mjs";
+import {
     CANVAS_OPEN_INPUT_SCHEMA,
     collectConstellationState,
     decorateConstellationForDemo,
@@ -473,6 +478,106 @@ test("pinch gesture zooms around the moving midpoint", () => {
     assert.equal(clamped.k, 0.65);
 });
 
+test("attention radar prioritizes actionable statuses and threshold matches", () => {
+    const now = Date.parse("2026-09-25T20:00:00.000Z");
+    const isoBefore = (milliseconds) => new Date(now - milliseconds).toISOString();
+    const items = getAttentionItems(
+        [
+            {
+                id: "completed-too-old",
+                name: "Old result",
+                status: "completed",
+                updatedAt: isoBefore(RECENT_COMPLETION_THRESHOLD_MS + 1),
+            },
+            {
+                id: "failed",
+                name: "Failure",
+                status: "failed",
+                updatedAt: isoBefore(1_000),
+            },
+            {
+                id: "busy-not-stale",
+                name: "Active",
+                status: "busy",
+                updatedAt: isoBefore(STALE_BUSY_THRESHOLD_MS - 1),
+            },
+            {
+                id: "waiting-plan",
+                name: "Plan",
+                status: "waiting-plan",
+                updatedAt: isoBefore(2_000),
+            },
+            {
+                id: "recent-boundary",
+                name: "Result",
+                status: "completed",
+                updatedAt: isoBefore(RECENT_COMPLETION_THRESHOLD_MS),
+            },
+            {
+                id: "blocked",
+                name: "Permission",
+                status: "blocked",
+                updatedAt: isoBefore(3_000),
+            },
+            {
+                id: "stale-boundary",
+                name: "Long runner",
+                status: "busy",
+                updatedAt: isoBefore(STALE_BUSY_THRESHOLD_MS),
+            },
+            {
+                id: "waiting-user",
+                name: "Question",
+                status: "waiting-user",
+                updatedAt: isoBefore(4_000),
+            },
+            {
+                id: "completed-future",
+                name: "Future result",
+                status: "completed",
+                updatedAt: new Date(now + 1).toISOString(),
+            },
+        ],
+        now
+    );
+
+    assert.deepEqual(
+        items.map(({ id, kind }) => ({ id, kind })),
+        [
+            { id: "waiting-user", kind: "waiting-user" },
+            { id: "waiting-plan", kind: "waiting-plan" },
+            { id: "blocked", kind: "blocked" },
+            { id: "failed", kind: "failed" },
+            { id: "stale-boundary", kind: "stale-busy" },
+            { id: "recent-boundary", kind: "recent-completed" },
+        ]
+    );
+});
+
+test("attention radar is deterministic within a priority and has a calm empty state", () => {
+    const now = Date.parse("2026-09-25T20:00:00.000Z");
+    const updatedAt = new Date(now - 1_000).toISOString();
+    const items = getAttentionItems(
+        [
+            { id: "z", name: "Zulu", status: "waiting-user", updatedAt },
+            { id: "a", name: "Alpha", status: "waiting-user", updatedAt },
+        ],
+        now
+    );
+    assert.deepEqual(items.map((item) => item.id), ["a", "z"]);
+    assert.deepEqual(
+        getAttentionItems(
+            [
+                { id: "idle", name: "Idle", status: "idle", updatedAt },
+                { id: "busy", name: "Busy", status: "busy", updatedAt },
+                { id: "completed", name: "Completed", status: "completed" },
+            ],
+            now
+        ),
+        []
+    );
+});
+
 test("collector uses app relationships and gracefully combines safe fallbacks", () => {
     const scratch = path.join(extensionDir, `.test-artifacts-${randomUUID()}`);
     const appPath = path.join(scratch, "data.db");
@@ -708,6 +813,10 @@ test("loopback server rejects unsafe requests and cleans up idempotently", async
         assert.equal(layoutModule.status, 200);
         assert.match(await layoutModule.text(), /layoutResponsiveConstellation/);
 
+        const attentionModule = await fetch(`${first.url}attention.mjs`, { headers: { cookie } });
+        assert.equal(attentionModule.status, 200);
+        assert.match(await attentionModule.text(), /getAttentionItems/);
+
         const stateResponse = await fetch(`${first.url}state`, { headers: { cookie } });
         assert.equal(stateResponse.status, 200);
         const normalState = await stateResponse.json();
@@ -789,6 +898,13 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     assert.match(html, /prefers-reduced-motion/);
     assert.match(html, /role="tree"/);
     assert.match(html, /Mission status counts/);
+    assert.match(html, /id="attentionTitle">Needs attention/);
+    assert.match(html, /Nothing needs attention right now\./);
+    assert.match(html, /getAttentionItems/);
+    assert.match(html, /function focusAttentionNode/);
+    assert.match(html, /Open session details\./);
+    assert.match(html, /target\?\.focus\(\)/);
+    assert.match(html, /openInspector\(node, true\)/);
     assert.match(html, /CURRENT/);
     assert.match(html, /current session/);
     assert.match(html, /id="inspectorClose"/);
