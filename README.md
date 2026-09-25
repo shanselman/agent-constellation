@@ -58,9 +58,24 @@ Model names such as `llama`, `phi`, `mistral`, or `qwen` are **not** assumed to 
 
 For demonstrations, the canvas accepts an isolated `demoLocalModel: true` open input. It decorates only the current session in the returned canvas state and does not alter stored Copilot session data or affect other open Agent Constellation instances.
 
+### Trust and diagnostics
+
+The toolbar includes a compact trust affordance. When all expected sources are available it stays visually quiet as **Sources ready**. Open it for a sanitized diagnostics panel that distinguishes:
+
+- **Recorded** metadata from the local app database or session store
+- **Inferred** session status derived from the operational signals currently available
+- **Partial or unavailable** sources and the resulting limitations
+- **Demo decoration**, which is presentation-only and never represented as recorded model metadata
+
+The panel reports app database, session store, bounded event-metadata coverage, refresh health, limitations, and `demoLocalModel` state. It never exposes database paths, raw errors, prompts, messages, secrets, tool arguments, internal event payloads, or repository file contents.
+
+Demo mode is intentionally unmistakable: the trust control changes to **Demo**, the current card receives a **DEMO** marker, and the diagnostics panel explains that only the current session's model presentation is simulated. This is a provenance disclosure, not a warning about local models.
+
 ### Real-time updates
 
 Each open canvas gets its own dependency-free HTTP server bound to an ephemeral `127.0.0.1` port. Server-Sent Events push state changes to the canvas, with lightweight polling as a fallback. Manual refresh and the agent-callable `refresh` action are also available.
+
+If a refresh fails, the last known sanitized constellation remains visible and refresh health changes to **Refresh delayed**. The next successful refresh automatically returns health to normal. Exception text is logged only through the existing ephemeral extension logger and is never added to canvas state or responses.
 
 ## Privacy and local security
 
@@ -69,6 +84,7 @@ Agent Constellation is deliberately local-first:
 - Reads Copilot's local SQLite databases in **read-only** mode.
 - Reads only a bounded tail of local session event metadata.
 - Returns sanitized identifiers and operational metadata—not prompts, chat messages, secrets, tool arguments, or repository file contents.
+- Returns explicit provenance categories and source availability without returning local database paths, raw errors, or internal event payloads.
 - Binds its renderer server to `127.0.0.1` only.
 - Requires an unguessable per-canvas bootstrap token, then stores it in an `HttpOnly`, `SameSite=Strict` cookie.
 - Rejects non-loopback hosts, cross-site requests, oversized request bodies, and unexpected refresh payloads.
@@ -125,6 +141,7 @@ For an explicit local-model UI demonstration:
 ### Controls and gestures
 
 - **Refresh** reloads local session metadata.
+- **Sources ready / Limited / Refresh delayed / Demo** opens trust and diagnostics.
 - **Current** centers the current session.
 - **Width** fits the tree to a readable minimum card scale.
 - **+ / -** zooms.
@@ -153,10 +170,10 @@ The installable extension lives entirely in [`.github/extensions/agent-constella
 | File | Responsibility |
 |---|---|
 | `extension.mjs` | Declares the canvas, open schema, actions, and lifecycle with the Copilot SDK. |
-| `data.mjs` | Reads local sources, derives statuses and relationships, sanitizes metadata, filters state, and isolates demo decoration. |
+| `data.mjs` | Reads local sources, derives statuses and relationships, sanitizes metadata, models provenance/source availability, filters state, and isolates demo decoration. |
 | `layout.mjs` | Produces deterministic horizontal/vertical layouts, completed-shelf behavior, model labels, fit scaling, and pinch transforms. |
-| `renderer.mjs` | Generates the accessible, responsive, theme-aware canvas UI. |
-| `server.mjs` | Hosts the token-protected loopback page, JSON state, refresh endpoint, and SSE stream. |
+| `renderer.mjs` | Generates the accessible, responsive, theme-aware canvas UI, trust affordance, and diagnostics panel. |
+| `server.mjs` | Hosts the token-protected loopback page, JSON state, refresh endpoint, SSE stream, and sanitized refresh health. |
 | `agent-constellation.test.mjs` | Covers collection, sanitization, relationships, responsive layout, gestures, local-model semantics, renderer accessibility, and loopback protections. |
 | `copilot-extension.json` | Identifies the folder as a shareable/installable Copilot extension. |
 
@@ -168,7 +185,7 @@ When present under `COPILOT_HOME` (normally `~/.copilot`), the extension combine
 - `session-store.db` for repository, branch, and reference fallbacks
 - `session-state/<session-id>/events.jsonl` for bounded operational timing and human-gate inference
 
-The extension tolerates missing tables, columns, databases, and event files. It degrades to the metadata that is available and reports limitations in the canvas.
+The extension tolerates missing tables, columns, databases, and event files. It degrades to the metadata that is available, reports event coverage as available/partial/unavailable, and explains limitations in the diagnostics panel.
 
 ## Limitations
 
@@ -176,7 +193,10 @@ The extension tolerates missing tables, columns, databases, and event files. It 
 - It follows the current session's accessible ancestor/descendant tree, not every unrelated Copilot session on the machine.
 - Copilot's local app data schema can evolve. The collector uses guarded reads and fallbacks, but a future schema change may temporarily reduce available metadata.
 - Statuses are inferred from local app state and recent event metadata; unavailable sources reduce precision.
+- Source availability describes whether the extension could read an expected local source, not whether every possible Copilot metadata field exists in that source.
+- Refresh health is scoped to the current open canvas instance and is not a durable uptime history.
 - Local-model classification requires explicit provider or runtime-prefixed model metadata.
+- `demoLocalModel` changes only sanitized presentation state for the current session; it does not validate or emulate a local runtime.
 - The canvas is a local operational view, not a durable historical analytics store.
 - Canvas extensions require a GitHub Copilot build with extension canvas support.
 

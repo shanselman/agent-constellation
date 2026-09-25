@@ -111,18 +111,47 @@ function publishState(entry) {
     }
 }
 
+export function withRefreshHealth(state, status, consecutiveFailures = 0) {
+    return {
+        ...state,
+        diagnostics: {
+            ...state?.diagnostics,
+            refresh: {
+                status: status === "degraded" ? "degraded" : "healthy",
+                consecutiveFailures:
+                    status === "degraded"
+                        ? Math.max(1, Math.floor(consecutiveFailures) || 1)
+                        : 0,
+            },
+        },
+    };
+}
+
 export async function refreshConstellationServer(entryOrPromise, { publish = true } = {}) {
     const entry = await entryOrPromise;
     if (!entry) throw new Error("Canvas server is not open");
     if (entry.refreshPromise) return entry.refreshPromise;
-    entry.refreshPromise = Promise.resolve(entry.dataProvider())
+    entry.refreshPromise = Promise.resolve()
+        .then(() => entry.dataProvider())
         .then((next) => {
-            const fingerprint = stateFingerprint(next);
+            const healthyState = withRefreshHealth(next, "healthy");
+            const fingerprint = stateFingerprint(healthyState);
             const changed = fingerprint !== entry.fingerprint;
-            entry.state = next;
+            entry.state = healthyState;
             entry.fingerprint = fingerprint;
             if (publish && changed) publishState(entry);
             return entry.state;
+        })
+        .catch((error) => {
+            const failures =
+                Number(entry.state?.diagnostics?.refresh?.consecutiveFailures) + 1;
+            const degradedState = withRefreshHealth(entry.state, "degraded", failures);
+            const fingerprint = stateFingerprint(degradedState);
+            const changed = fingerprint !== entry.fingerprint;
+            entry.state = degradedState;
+            entry.fingerprint = fingerprint;
+            if (publish && changed) publishState(entry);
+            throw error;
         })
         .finally(() => {
             entry.refreshPromise = undefined;
@@ -138,7 +167,7 @@ export async function startConstellationServer({
     logger,
 } = {}) {
     if (typeof dataProvider !== "function") throw new Error("A data provider is required");
-    const initialState = await dataProvider();
+    const initialState = withRefreshHealth(await dataProvider(), "healthy");
     const entry = {
         server: undefined,
         url: "",

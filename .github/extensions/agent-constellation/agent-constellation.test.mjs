@@ -27,6 +27,7 @@ import { renderConstellationHtml } from "./renderer.mjs";
 import {
     closeConstellationServer,
     getOrCreateConstellationServer,
+    refreshConstellationServer,
 } from "./server.mjs";
 
 const extensionDir = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, "$1"));
@@ -116,7 +117,12 @@ function fixtureState() {
             },
         ],
         "root-session",
-        { appDatabase: true, sessionStore: true, eventMetadata: true }
+        {
+            appDatabase: true,
+            sessionStore: true,
+            eventMetadata: "available",
+            eventSessionsObserved: 3,
+        }
     );
 }
 
@@ -145,6 +151,27 @@ test("normalization sanitizes metadata and layout is deterministic", () => {
         ["busy-child", "root-session", "waiting-grandchild"]
     );
     assert.equal(layoutConstellation([], "missing").nodes.length, 0);
+    assert.equal(first.trust.level, "healthy");
+    assert.deepEqual(
+        first.trust.sources.map(({ id, availability }) => ({ id, availability })),
+        [
+            { id: "appDatabase", availability: "available" },
+            { id: "sessionStore", availability: "available" },
+            { id: "eventMetadata", availability: "available" },
+        ]
+    );
+    assert.equal(
+        first.nodes.find((node) => node.id === "root-session").provenance.model,
+        "recorded"
+    );
+    assert.equal(
+        first.nodes.find((node) => node.id === "busy-child").provenance.status,
+        "inferred"
+    );
+    assert.match(
+        first.trust.privacy,
+        /prompts, messages, secrets, raw errors, event payloads, database paths/
+    );
 });
 
 test("model labels use conservative humanization and optional reasoning effort", () => {
@@ -239,6 +266,12 @@ test("demo decoration clones state and changes only the current session", () => 
     assert.equal(current.reasoningEffort, "high");
     assert.equal(current.isLocalModel, true);
     assert.equal(current.demoLocalModel, true);
+    assert.equal(current.provenance.model, "demo");
+    assert.equal(decorated.trust.demoDecoration.active, true);
+    assert.equal(
+        decorated.trust.demoDecoration.scope,
+        "Current session model presentation only."
+    );
     for (const node of decorated.nodes.filter((node) => node.id !== decorated.currentSessionId)) {
         assert.equal(node.demoLocalModel, undefined);
     }
@@ -287,6 +320,11 @@ test("collector remains compatible when provider metadata is unavailable", () =>
         assert.equal(current.provider, undefined);
         assert.equal(current.model, "llama-3.3");
         assert.equal(current.isLocalModel, false);
+        assert.equal(current.provenance.model, "recorded");
+        assert.equal(current.provenance.modelSource, "appDatabase");
+        assert.equal(state.source.sessionStore, "unavailable");
+        assert.equal(state.source.eventMetadata, "unavailable");
+        assert.equal(state.trust.level, "limited");
     } finally {
         app.close();
         rmSync(scratch, { recursive: true, force: true });
@@ -669,13 +707,73 @@ test("collector uses app relationships and gracefully combines safe fallbacks", 
         assert.equal(child.humanGate.label, "Plan approval required");
         assert.equal(child.pullRequest, "#42");
         assert.equal(child.issue, "#7");
+        assert.equal(result.source.appDatabase, "available");
+        assert.equal(result.source.sessionStore, "available");
+        assert.equal(result.source.eventMetadata, "partial");
+        assert.deepEqual(result.source.eventMetadataCoverage, {
+            observed: 1,
+            total: 2,
+        });
+        assert.equal(result.trust.level, "limited");
+        assert.equal(root.provenance.repositorySource, "appDatabase");
+        assert.equal(root.provenance.modelSource, "appDatabase");
+        assert.deepEqual(root.provenance.statusSources, [
+            "appDatabase",
+            "eventMetadata",
+        ]);
+        assert.deepEqual(child.provenance.statusSources, ["appDatabase"]);
         assert.equal(JSON.stringify(result).includes("Safe title"), false);
         assert.equal(JSON.stringify(result).includes("Private child prompt"), false);
+        assert.equal(JSON.stringify(result).includes(appPath), false);
+        assert.equal(JSON.stringify(result).includes(storePath), false);
     } finally {
         app?.close();
         store?.close();
         rmSync(scratch, { recursive: true, force: true });
     }
+});
+
+test("refresh health degrades without leaking errors and recovers on success", async () => {
+    const initial = fixtureState();
+    let fail = true;
+    const entry = {
+        dataProvider: async () => {
+            if (fail) {
+                throw new Error(
+                    "private prompt and D:\\Users\\person\\.copilot\\data.db must not escape"
+                );
+            }
+            return fixtureState();
+        },
+        state: initial,
+        fingerprint: stateFingerprint(initial),
+        clients: new Set(),
+        refreshPromise: undefined,
+    };
+
+    await assert.rejects(refreshConstellationServer(entry), /must not escape/);
+    assert.deepEqual(entry.state.diagnostics.refresh, {
+        status: "degraded",
+        consecutiveFailures: 1,
+    });
+    assert.equal(JSON.stringify(entry.state).includes("private prompt"), false);
+    assert.equal(JSON.stringify(entry.state).includes("data.db"), false);
+
+    fail = false;
+    const recovered = await refreshConstellationServer(entry);
+    assert.deepEqual(recovered.diagnostics.refresh, {
+        status: "healthy",
+        consecutiveFailures: 0,
+    });
+});
+
+test("extension actions replace refresh failures with a sanitized canvas error", () => {
+    const source = readFileSync(path.join(extensionDir, "extension.mjs"), "utf8");
+    assert.match(source, /async function refreshForAction/);
+    assert.match(source, /"refresh_unavailable"/);
+    assert.match(source, /could not refresh local metadata/);
+    assert.match(source, /catch \{/);
+    assert.doesNotMatch(source, /refreshForAction\(entry,\s*error/);
 });
 
 test("loopback server rejects unsafe requests and cleans up idempotently", async () => {
@@ -793,6 +891,17 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     assert.match(html, /current session/);
     assert.match(html, /id="inspectorClose"/);
     assert.match(html, /aria-label="Close session details"/);
+    assert.match(html, /id="trustToggle"/);
+    assert.match(html, /aria-controls="diagnostics"/);
+    assert.match(html, /aria-label="Trust and diagnostics"/);
+    assert.match(html, /aria-label="Close trust and diagnostics"/);
+    assert.match(html, /Demo decoration is active/);
+    assert.match(html, /Local models are supported without this decoration/);
+    assert.match(html, /function renderDiagnostics/);
+    assert.match(html, /latest refresh did not complete/i);
+    assert.match(html, /existing state retained/i);
+    assert.match(html, /demoMarkerText\.textContent = "DEMO"/);
+    assert.match(html, /sensitive content is not returned/);
     assert.match(html, /aria-hidden="true"/);
     assert.match(html, /function closeInspector/);
     assert.match(html, /function appendModelDetail/);

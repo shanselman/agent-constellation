@@ -20,6 +20,7 @@ export function renderConstellationHtml(config) {
       --idle: var(--text-color-muted, #8b949e);
       --complete: #3fb950;
       --local-model: color-mix(in srgb, var(--complete) 86%, var(--text) 14%);
+      --demo: #a371f7;
       --waiting: #d29922;
       --plan: #a371f7;
       --blocked: #db6d28;
@@ -110,6 +111,34 @@ export function renderConstellationHtml(config) {
     .toolbar { display: flex; align-items: center; gap: 4px; margin-left: auto; }
     .toolbar button { min-width: 30px; }
     .toolbar .text-control { min-width: auto; }
+    .trust-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-width: auto !important;
+      color: var(--muted);
+      border-color: transparent;
+    }
+    .trust-control.limited {
+      color: var(--waiting);
+      border-color: color-mix(in srgb, var(--waiting) 55%, var(--border));
+    }
+    .trust-control.degraded {
+      color: var(--blocked);
+      border-color: color-mix(in srgb, var(--blocked) 55%, var(--border));
+    }
+    .trust-control.demo {
+      color: var(--demo);
+      border-color: color-mix(in srgb, var(--demo) 65%, var(--border));
+      font-weight: var(--font-weight-semibold, 600);
+    }
+    .trust-indicator {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      flex: none;
+    }
     .filters {
       grid-row: 2;
       display: none;
@@ -228,16 +257,23 @@ export function renderConstellationHtml(config) {
       font-weight: var(--font-weight-semibold, 600);
       letter-spacing: .4px;
     }
-    .inspector {
+    .demo-marker { fill: var(--demo); }
+    .demo-marker-text {
+      fill: var(--color-white, #fff);
+      font-size: 8px;
+      font-weight: var(--font-weight-semibold, 600);
+      letter-spacing: .4px;
+    }
+    .inspector, .diagnostics {
       display: none;
-      max-height: min(42vh, 320px);
+      max-height: min(46vh, 380px);
       overflow: auto;
       border-top: 1px solid var(--border);
       background: var(--panel-bg);
       padding: 8px 10px 10px;
     }
-    .inspector.open { display: block; }
-    .inspector-head {
+    .inspector.open, .diagnostics.open { display: block; }
+    .inspector-head, .diagnostics-head {
       display: flex;
       align-items: center;
       gap: 8px;
@@ -248,14 +284,14 @@ export function renderConstellationHtml(config) {
       background: var(--panel-bg);
       border-bottom: 1px solid var(--border);
     }
-    .inspector h2 {
+    .inspector h2, .diagnostics h2 {
       margin: 0;
       font-size: var(--text-title-small, 16px);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .inspector-close { margin-left: auto; }
+    .inspector-close, .diagnostics-close { margin-left: auto; }
     .detail-status {
       display: inline-flex;
       align-items: center;
@@ -275,13 +311,59 @@ export function renderConstellationHtml(config) {
     dd { margin: 0; overflow-wrap: anywhere; }
     .model-detail { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; }
     .demo-local-model {
-      color: var(--local-model);
+      color: var(--demo);
       font-size: 11px;
       font-weight: var(--font-weight-semibold, 600);
       white-space: nowrap;
     }
     code { font-family: var(--font-mono, Consolas, monospace); font-size: var(--text-code-inline, 12px); }
     .source-note { margin-top: 8px; color: var(--muted); font-size: 11px; }
+    .trust-summary { margin: 7px 0 9px; color: var(--muted); }
+    .demo-notice {
+      margin: 8px 0;
+      padding: 7px 9px;
+      border: 1px solid color-mix(in srgb, var(--demo) 60%, var(--border));
+      border-radius: 7px;
+      background: color-mix(in srgb, var(--demo) 10%, transparent);
+    }
+    .demo-notice strong { color: var(--demo); }
+    .diagnostic-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+      gap: 14px;
+    }
+    .diagnostics h3 {
+      margin: 7px 0 5px;
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .35px;
+    }
+    .source-list { display: grid; gap: 5px; }
+    .source-row {
+      display: grid;
+      grid-template-columns: minmax(105px, max-content) auto minmax(0, 1fr);
+      align-items: baseline;
+      gap: 7px;
+      padding: 4px 0;
+      border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+    }
+    .source-row:last-child { border-bottom: 0; }
+    .source-label { font-weight: var(--font-weight-semibold, 600); }
+    .availability {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 0 6px;
+      color: var(--muted);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+    .availability.partial { color: var(--waiting); border-color: var(--waiting); }
+    .availability.unavailable { color: var(--blocked); border-color: var(--blocked); }
+    .availability.demo { color: var(--demo); border-color: var(--demo); }
+    .source-description, .privacy-note { color: var(--muted); font-size: 11px; }
+    .diagnostic-facts { margin-top: 0; }
+    .privacy-note { margin: 8px 0 0; }
     .sr-only {
       position: absolute;
       width: 1px;
@@ -313,6 +395,9 @@ export function renderConstellationHtml(config) {
       select { max-width: none; width: 100%; }
       dl { grid-template-columns: 1fr; gap: 1px; }
       dd { margin-bottom: 4px; }
+      .diagnostic-grid { grid-template-columns: 1fr; gap: 5px; }
+      .source-row { grid-template-columns: minmax(100px, max-content) auto; }
+      .source-description { grid-column: 1 / -1; }
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
@@ -334,6 +419,10 @@ export function renderConstellationHtml(config) {
       </div>
       <div class="status-strip" id="legend" aria-label="Mission status counts"></div>
       <div class="toolbar" aria-label="Constellation controls">
+        <button id="trustToggle" class="trust-control" type="button" aria-expanded="false" aria-controls="diagnostics" title="Open trust and diagnostics">
+          <span class="trust-indicator" aria-hidden="true"></span>
+          <span id="trustLabel">Sources</span>
+        </button>
         <button id="refresh" type="button" title="Refresh live state">↻<span class="sr-only">Refresh</span></button>
         <button id="home" class="text-control" type="button" title="Center the current session">◎<span class="optional-label"> Current</span><span class="sr-only">Center current session</span></button>
         <button id="fitWidth" class="text-control" type="button" title="Fit readable card width">↔<span class="optional-label"> Width</span><span class="sr-only">Fit width</span></button>
@@ -376,6 +465,28 @@ export function renderConstellationHtml(config) {
         <dl id="details"></dl>
         <div class="source-note" id="sourceNote">Sanitized metadata only.</div>
       </section>
+      <section class="diagnostics" id="diagnostics" aria-label="Trust and diagnostics" aria-hidden="true">
+        <div class="diagnostics-head">
+          <h2>Trust and diagnostics</h2>
+          <button class="diagnostics-close" id="diagnosticsClose" type="button" aria-label="Close trust and diagnostics">×</button>
+        </div>
+        <p class="trust-summary" id="trustSummary"></p>
+        <div class="demo-notice" id="demoNotice" role="note" hidden>
+          <strong>Demo decoration is active.</strong>
+          The current session's local-model presentation is simulated only in this canvas. Local models are supported without this decoration.
+        </div>
+        <div class="diagnostic-grid">
+          <section aria-labelledby="sourcesHeading">
+            <h3 id="sourcesHeading">Sources</h3>
+            <div class="source-list" id="sourceDiagnostics"></div>
+          </section>
+          <section aria-labelledby="interpretationHeading">
+            <h3 id="interpretationHeading">Interpretation</h3>
+            <dl class="diagnostic-facts" id="provenanceDetails"></dl>
+          </section>
+        </div>
+        <p class="privacy-note" id="privacyNote"></p>
+      </section>
     </main>
   </div>
   <div class="sr-only" id="live" aria-live="polite"></div>
@@ -417,10 +528,11 @@ export function renderConstellationHtml(config) {
     };
     const elements = Object.fromEntries([
       "summary", "refresh", "home", "fitWidth", "zoomOut", "zoomIn",
-      "filtersToggle", "filters", "statusFilter", "repoFilter", "legend",
+      "trustToggle", "trustLabel", "filtersToggle", "filters", "statusFilter", "repoFilter", "legend",
       "stage", "constellation", "viewport", "edges", "nodes", "empty",
       "inspector", "inspectorClose", "detailName", "detailStatus", "details",
-      "sourceNote", "live"
+      "sourceNote", "diagnostics", "diagnosticsClose", "trustSummary",
+      "demoNotice", "sourceDiagnostics", "provenanceDetails", "privacyNote", "live"
     ].map((id) => [id, document.getElementById(id)]));
 
     function svgElement(name, attributes) {
@@ -547,7 +659,7 @@ export function renderConstellationHtml(config) {
       applyTransform();
     }
 
-    function appendDetail(label, value, code) {
+    function appendDefinition(target, label, value, code) {
       if (!value) return;
       const dt = document.createElement("dt");
       dt.textContent = label;
@@ -555,7 +667,23 @@ export function renderConstellationHtml(config) {
       const content = code ? document.createElement("code") : document.createElement("span");
       content.textContent = value;
       dd.appendChild(content);
-      elements.details.append(dt, dd);
+      target.append(dt, dd);
+    }
+
+    function appendDetail(label, value, code) {
+      appendDefinition(elements.details, label, value, code);
+    }
+
+    function provenanceLabel(kind, source) {
+      if (kind === "demo") return "Demo decoration";
+      if (kind === "inferred") return "Inferred";
+      if (kind === "unavailable") return "Unavailable";
+      const sourceLabel = {
+        appDatabase: "app database",
+        sessionStore: "session store",
+        eventMetadata: "event metadata"
+      }[source];
+      return sourceLabel ? "Recorded · " + sourceLabel : "Recorded";
     }
 
     function appendModelDetail(node) {
@@ -579,6 +707,7 @@ export function renderConstellationHtml(config) {
     }
 
     function openInspector(node, announce) {
+      closeDiagnostics({ restoreFocus: false });
       state.selectedId = node.id;
       elements.inspector.classList.add("open");
       elements.inspector.setAttribute("aria-hidden", "false");
@@ -602,6 +731,20 @@ export function renderConstellationHtml(config) {
       appendDetail("Busy elapsed", node.status === "busy" ? elapsed(node.busySince) : "");
       appendDetail("Last activity", node.updatedAt ? new Date(node.updatedAt).toLocaleString() : "");
       appendDetail("Session ID", node.id, true);
+      const statusSources = (node.provenance?.statusSources || []).map((source) => ({
+        appDatabase: "app database",
+        sessionStore: "session store",
+        eventMetadata: "event metadata"
+      }[source])).filter(Boolean);
+      const statusSource = statusSources.length
+        ? "Status is inferred from " + statusSources.join(" and ") + "."
+        : "Status is inferred from the metadata currently available.";
+      const modelSource = "Model is " + provenanceLabel(
+        node.provenance?.model || (node.model ? "recorded" : "unavailable"),
+        node.provenance?.modelSource
+      ).toLowerCase() + ".";
+      elements.sourceNote.textContent =
+        statusSource + " " + modelSource + " Sanitized metadata only.";
       updateSelection();
       if (announce) elements.live.textContent = "Opened details for " + node.name + ", " + statusText(node);
     }
@@ -612,6 +755,112 @@ export function renderConstellationHtml(config) {
       if (restoreFocus && state.selectedId) {
         elements.nodes.querySelector('[data-id="' + CSS.escape(state.selectedId) + '"]')?.focus();
       }
+    }
+
+    function openDiagnostics() {
+      closeInspector({ restoreFocus: false });
+      elements.diagnostics.classList.add("open");
+      elements.diagnostics.setAttribute("aria-hidden", "false");
+      elements.trustToggle.setAttribute("aria-expanded", "true");
+      elements.diagnosticsClose.focus();
+    }
+
+    function closeDiagnostics({ restoreFocus = true } = {}) {
+      elements.diagnostics.classList.remove("open");
+      elements.diagnostics.setAttribute("aria-hidden", "true");
+      elements.trustToggle.setAttribute("aria-expanded", "false");
+      if (restoreFocus) elements.trustToggle.focus();
+    }
+
+    function sourceRow(source) {
+      const row = document.createElement("div");
+      row.className = "source-row";
+      const label = document.createElement("span");
+      label.className = "source-label";
+      label.textContent = source.label;
+      const availability = document.createElement("span");
+      availability.className = "availability " + source.availability;
+      availability.textContent = {
+        available: "Available",
+        partial: "Partial",
+        unavailable: "Unavailable"
+      }[source.availability] || "Unknown";
+      const description = document.createElement("span");
+      description.className = "source-description";
+      let detail = source.description || "";
+      if (source.id === "eventMetadata" && source.coverage) {
+        detail += " Coverage: " + Number(source.coverage.observed || 0) +
+          " of " + Number(source.coverage.total || 0) + " visible sessions.";
+      }
+      description.textContent = detail;
+      row.append(label, availability, description);
+      return row;
+    }
+
+    function renderDiagnostics() {
+      if (!state.data) return;
+      const trust = state.data.trust || {};
+      const refresh = state.data.diagnostics?.refresh || {
+        status: "healthy",
+        consecutiveFailures: 0
+      };
+      const demoActive = trust.demoDecoration?.active === true;
+      const limited = trust.level === "limited";
+      const degraded = refresh.status === "degraded";
+      const presentation = demoActive
+        ? { label: "Demo", className: "demo", summary: "Demo decoration is active; source health is shown below." }
+        : degraded
+          ? { label: "Refresh delayed", className: "degraded", summary: "The latest refresh did not complete. The last known sanitized state remains visible." }
+          : limited
+            ? { label: "Limited", className: "limited", summary: "Some local metadata sources are partial or unavailable." }
+            : { label: "Sources ready", className: "", summary: "All expected local metadata sources are available." };
+      elements.trustLabel.textContent = presentation.label;
+      elements.trustToggle.className = "trust-control " + presentation.className;
+      elements.trustToggle.setAttribute(
+        "aria-label",
+        "Open trust and diagnostics. " + presentation.label
+      );
+      elements.trustSummary.textContent = presentation.summary;
+      elements.demoNotice.hidden = !demoActive;
+      elements.sourceDiagnostics.replaceChildren();
+      (trust.sources || []).forEach((source) => {
+        elements.sourceDiagnostics.appendChild(sourceRow(source));
+      });
+      elements.provenanceDetails.replaceChildren();
+      appendDefinition(
+        elements.provenanceDetails,
+        "Recorded",
+        "Repository, relationship, branch, and model fields identify their recorded local source."
+      );
+      appendDefinition(
+        elements.provenanceDetails,
+        "Inferred",
+        "Session status is derived from the operational signals that are available."
+      );
+      appendDefinition(
+        elements.provenanceDetails,
+        "Refresh",
+        degraded
+          ? "Delayed · " + Number(refresh.consecutiveFailures || 1) +
+            " consecutive attempt" + (Number(refresh.consecutiveFailures || 1) === 1 ? "" : "s") +
+            "; existing state retained."
+          : "Healthy · latest refresh succeeded."
+      );
+      appendDefinition(
+        elements.provenanceDetails,
+        "Demo state",
+        demoActive
+          ? "Active · current session model presentation only."
+          : "Inactive · no demo decoration."
+      );
+      const limitations = state.data.source?.limitations || [];
+      appendDefinition(
+        elements.provenanceDetails,
+        "Limitations",
+        limitations.length ? limitations.join(" ") : "None reported by the collector."
+      );
+      elements.privacyNote.textContent = trust.privacy ||
+        "Sanitized operational metadata only; sensitive content is not returned.";
     }
 
     function updateSelection() {
@@ -820,6 +1069,24 @@ export function renderConstellationHtml(config) {
           markerText.textContent = "CURRENT";
           group.append(marker, markerText);
         }
+        if (node.demoLocalModel) {
+          const demoMarker = svgElement("rect", {
+            class: "demo-marker",
+            x: -width / 2 + 4,
+            y: -height / 2 - 7,
+            width: 39,
+            height: 17,
+            rx: 8
+          });
+          const demoMarkerText = svgElement("text", {
+            class: "demo-marker-text",
+            x: -width / 2 + 23.5,
+            y: -height / 2 + 5,
+            "text-anchor": "middle"
+          });
+          demoMarkerText.textContent = "DEMO";
+          group.append(demoMarker, demoMarkerText);
+        }
         group.addEventListener("click", () => {
           if (node.isShelf) toggleCompletedShelf();
           else openInspector(node, true);
@@ -930,15 +1197,12 @@ export function renderConstellationHtml(config) {
     function acceptState(next, announce) {
       if (!next || !Array.isArray(next.nodes) || !Array.isArray(next.edges)) return;
       state.data = next;
+      renderDiagnostics();
       renderRepositories();
       render();
       const selected = next.nodes.find((node) => node.id === state.selectedId);
       if (selected && elements.inspector.classList.contains("open")) openInspector(selected, false);
       if (announce) elements.live.textContent = "Constellation refreshed. " + next.nodes.length + " sessions available.";
-      const limitations = next.source?.limitations || [];
-      elements.sourceNote.textContent = limitations.length
-        ? "Sanitized metadata only. " + limitations.join(" ")
-        : "Live sanitized metadata only; prompts, messages, secrets, and file contents are not returned.";
     }
 
     async function fetchState(url, options) {
@@ -959,6 +1223,23 @@ export function renderConstellationHtml(config) {
           : await fetchState(config.stateUrl);
         acceptState(next, manual);
       } catch {
+        if (state.data) {
+          const failures = Math.max(
+            1,
+            Number(state.data.diagnostics?.refresh?.consecutiveFailures || 0)
+          );
+          state.data = {
+            ...state.data,
+            diagnostics: {
+              ...state.data.diagnostics,
+              refresh: {
+                status: "degraded",
+                consecutiveFailures: failures
+              }
+            }
+          };
+          renderDiagnostics();
+        }
         elements.live.textContent = "Constellation refresh failed. Existing state remains visible.";
       } finally {
         elements.refresh.disabled = false;
@@ -1005,6 +1286,10 @@ export function renderConstellationHtml(config) {
     }
 
     elements.refresh.addEventListener("click", () => refresh(true));
+    elements.trustToggle.addEventListener("click", () => {
+      if (elements.diagnostics.classList.contains("open")) closeDiagnostics();
+      else openDiagnostics();
+    });
     elements.home.addEventListener("click", () => homeCurrent());
     elements.fitWidth.addEventListener("click", fitReadableWidth);
     elements.zoomIn.addEventListener("click", () => setZoom(state.transform.k * 1.16));
@@ -1014,6 +1299,7 @@ export function renderConstellationHtml(config) {
       elements.filtersToggle.setAttribute("aria-expanded", open ? "true" : "false");
     });
     elements.inspectorClose.addEventListener("click", () => closeInspector());
+    elements.diagnosticsClose.addEventListener("click", () => closeDiagnostics());
     elements.statusFilter.value = state.status;
     elements.statusFilter.addEventListener("change", () => {
       state.status = elements.statusFilter.value;
@@ -1079,7 +1365,10 @@ export function renderConstellationHtml(config) {
     elements.constellation.addEventListener("pointercancel", finishPointer);
     elements.constellation.addEventListener("lostpointercapture", finishPointer);
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && elements.inspector.classList.contains("open")) {
+      if (event.key === "Escape" && elements.diagnostics.classList.contains("open")) {
+        event.preventDefault();
+        closeDiagnostics();
+      } else if (event.key === "Escape" && elements.inspector.classList.contains("open")) {
         event.preventDefault();
         closeInspector();
       }
