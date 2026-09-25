@@ -81,7 +81,7 @@ session = await joinSession({
                 {
                     name: "get_state",
                     description:
-                        "Returns sanitized constellation metadata, optionally filtered by status or repository.",
+                        "Returns sanitized constellation metadata, optionally filtered by status, repository, or search.",
                     inputSchema: {
                         type: "object",
                         properties: FILTER_PROPERTIES,
@@ -107,6 +107,7 @@ session = await joinSession({
                                 demoLocalModel: ctx.input?.demoLocalModel === true,
                             }),
                         initialRepository: ctx.input?.repository,
+                        initialSearch: ctx.input?.search,
                         initialStatus: ctx.input?.status,
                         logger: (message, options) => session?.log?.(message, options),
                     }

@@ -43,6 +43,12 @@ Completed descendants collapse into a **Completed shelf** so a large constellati
 
 Wide canvases use a horizontal family-tree layout. Narrow or tall side panes automatically switch to a compact vertical mission-control layout with readable cards, horizontal ancestry, and scrollable depth. The toolbar also condenses for narrow panes.
 
+### Search and lineage focus
+
+Search uses only the sanitized metadata already available to the canvas. It matches normalized tokens across session names, repositories, branches, pull request and issue references, task labels, models, and statuses. Matching sessions retain their ancestors for orientation, while a no-match search shows an explicit empty state instead of unrelated anchors.
+
+Select a session and choose **Focus lineage** (or press <kbd>F</kbd> on its card) to isolate that session with its ancestors and descendants. The focused card gets a stronger visual cue, the inspector reports ancestor and descendant counts, and the persistent **Show all** button resets the view. Focus mode composes with search and existing status or repository filters.
+
 ### Model and reasoning badges
 
 When Copilot exposes model metadata, cards and the inspector display a conservative human-readable label such as `GPT-5.6 Sol Fast · High`. Missing provider or model fields are handled without hiding the session.
@@ -129,14 +135,19 @@ For an explicit local-model UI demonstration:
 - **Width** fits the tree to a readable minimum card scale.
 - **+ / -** zooms.
 - **Filter** narrows by status or repository.
+- **Search** matches sanitized name, repository, branch, PR/issue/task reference, model, and status metadata. Press <kbd>/</kbd> to move to search.
 - **Click or press Enter/Space** on a session to open its inspector.
-- **Arrow keys** move focus directionally between session cards.
+- **Focus lineage** isolates the selected session with its ancestors and descendants; **Show all** resets focus mode.
+- **Arrow keys** move focus directionally between session cards using a single roving tab stop.
+- **Page Up / Page Down** move to the parent or first child. **Home** moves to the current session; **Ctrl+Home** moves to the root.
+- **F** focuses the lineage of the keyboard-focused session.
 - **Click the Completed shelf** to expand or collapse completed descendants.
 - **Drag empty canvas space** to pan.
 - **Pinch** with two touch or pointer contacts to zoom and pan around the moving midpoint.
 - **Ctrl + wheel** zooms around the pointer.
 - **Double-click empty canvas space** to zoom in.
 - **Escape** closes the inspector.
+- **Escape** again clears lineage focus.
 
 Animations honor `prefers-reduced-motion`.
 
@@ -154,10 +165,10 @@ The installable extension lives entirely in [`.github/extensions/agent-constella
 |---|---|
 | `extension.mjs` | Declares the canvas, open schema, actions, and lifecycle with the Copilot SDK. |
 | `data.mjs` | Reads local sources, derives statuses and relationships, sanitizes metadata, filters state, and isolates demo decoration. |
-| `layout.mjs` | Produces deterministic horizontal/vertical layouts, completed-shelf behavior, model labels, fit scaling, and pinch transforms. |
+| `layout.mjs` | Produces deterministic horizontal/vertical layouts, search normalization, focus sets, completed-shelf behavior, model labels, fit scaling, and pinch transforms. |
 | `renderer.mjs` | Generates the accessible, responsive, theme-aware canvas UI. |
 | `server.mjs` | Hosts the token-protected loopback page, JSON state, refresh endpoint, and SSE stream. |
-| `agent-constellation.test.mjs` | Covers collection, sanitization, relationships, responsive layout, gestures, local-model semantics, renderer accessibility, and loopback protections. |
+| `agent-constellation.test.mjs` | Covers collection, sanitization, search, lineage focus, relationships, responsive layout, gestures, local-model semantics, renderer accessibility, and loopback protections. |
 | `copilot-extension.json` | Identifies the folder as a shareable/installable Copilot extension. |
 
 ### Local data sources
@@ -176,6 +187,8 @@ The extension tolerates missing tables, columns, databases, and event files. It 
 - It follows the current session's accessible ancestor/descendant tree, not every unrelated Copilot session on the machine.
 - Copilot's local app data schema can evolve. The collector uses guarded reads and fallbacks, but a future schema change may temporarily reduce available metadata.
 - Statuses are inferred from local app state and recent event metadata; unavailable sources reduce precision.
+- Search is token-normalized substring matching over sanitized metadata, not fuzzy or full-text search.
+- Focus mode follows recorded parent-child relationships; unavailable relationship metadata cannot be reconstructed.
 - Local-model classification requires explicit provider or runtime-prefixed model metadata.
 - The canvas is a local operational view, not a durable historical analytics store.
 - Canvas extensions require a GitHub Copilot build with extension canvas support.

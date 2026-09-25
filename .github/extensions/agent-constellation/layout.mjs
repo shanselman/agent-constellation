@@ -37,8 +37,151 @@ const statusPriority = new Map(
     ].map((status, index) => [status, index])
 );
 
+const statusSearchLabels = new Map([
+    ["busy", "busy working"],
+    ["waiting-user", "waiting for user attention"],
+    ["waiting-plan", "waiting for plan approval"],
+    ["blocked", "blocked"],
+    ["failed", "failed error"],
+    ["completed", "completed done"],
+    ["idle", "idle"],
+    ["archived", "archived"],
+]);
+
 function clamp(value, minimum, maximum) {
     return Math.max(minimum, Math.min(maximum, value));
+}
+
+export function normalizeSearchQuery(value) {
+    if (typeof value !== "string") return "";
+    return value
+        .normalize("NFKD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu, " ")
+        .trim()
+        .replace(/\s+/g, " ");
+}
+
+export function sessionMatchesSearch(node, query) {
+    const normalizedQuery = normalizeSearchQuery(query);
+    if (!normalizedQuery) return true;
+    const searchable = normalizeSearchQuery(
+        [
+            node?.name,
+            node?.repository,
+            node?.branch,
+            node?.pullRequest,
+            node?.issue,
+            node?.task,
+            node?.provider,
+            node?.model,
+            node?.reasoningEffort,
+            node?.status,
+            statusSearchLabels.get(node?.status),
+        ]
+            .filter(Boolean)
+            .join(" ")
+    );
+    return normalizedQuery.split(" ").every((token) => searchable.includes(token));
+}
+
+export function buildFocusSet(nodes, selectedId) {
+    const byId = new Map((nodes ?? []).map((node) => [node.id, node]));
+    if (!byId.has(selectedId)) return new Set();
+
+    const focused = new Set();
+    const ancestryVisited = new Set();
+    let current = byId.get(selectedId);
+    while (current && !ancestryVisited.has(current.id)) {
+        ancestryVisited.add(current.id);
+        focused.add(current.id);
+        current = current.parentId ? byId.get(current.parentId) : undefined;
+    }
+
+    const children = new Map();
+    for (const node of byId.values()) {
+        if (!node.parentId || !byId.has(node.parentId)) continue;
+        if (!children.has(node.parentId)) children.set(node.parentId, []);
+        children.get(node.parentId).push(node.id);
+    }
+    const queue = [selectedId];
+    const descendantsVisited = new Set();
+    while (queue.length) {
+        const id = queue.shift();
+        if (!id || descendantsVisited.has(id)) continue;
+        descendantsVisited.add(id);
+        focused.add(id);
+        for (const childId of children.get(id) ?? []) queue.push(childId);
+    }
+    return focused;
+}
+
+export function selectConstellationState(
+    state,
+    {
+        status = "",
+        repository = "",
+        search = "",
+        focusSessionId = "",
+    } = {}
+) {
+    const nodes = state?.nodes ?? [];
+    const normalizedRepository = String(repository).toLowerCase();
+    const normalizedSearch = normalizeSearchQuery(search);
+    const focusIds = focusSessionId ? buildFocusSet(nodes, focusSessionId) : null;
+    const hasCriteria = Boolean(status || normalizedRepository || normalizedSearch);
+
+    if (!hasCriteria && !focusIds) return state;
+
+    const keep = new Set();
+    for (const node of nodes) {
+        if (focusIds && !focusIds.has(node.id)) continue;
+        if (status && node.status !== status) continue;
+        if (
+            normalizedRepository &&
+            String(node.repository).toLowerCase() !== normalizedRepository
+        ) {
+            continue;
+        }
+        if (normalizedSearch && !sessionMatchesSearch(node, normalizedSearch)) continue;
+        keep.add(node.id);
+    }
+
+    if (!hasCriteria && focusIds) {
+        for (const id of focusIds) keep.add(id);
+    } else if (!normalizedSearch) {
+        if (!focusIds || focusIds.has(state.rootId)) keep.add(state.rootId);
+        if (!focusIds || focusIds.has(state.currentSessionId)) {
+            keep.add(state.currentSessionId);
+        }
+    }
+
+    let changed = true;
+    while (changed) {
+        changed = false;
+        for (const node of nodes) {
+            if (
+                keep.has(node.id) &&
+                node.parentId &&
+                (!focusIds || focusIds.has(node.parentId)) &&
+                !keep.has(node.parentId)
+            ) {
+                keep.add(node.parentId);
+                changed = true;
+            }
+        }
+    }
+
+    const selectedNodes = nodes.filter((node) => keep.has(node.id));
+    const selectedIds = new Set(selectedNodes.map((node) => node.id));
+    return {
+        ...state,
+        nodes: selectedNodes,
+        edges: (state?.edges ?? []).filter(
+            (edge) => selectedIds.has(edge.source) && selectedIds.has(edge.target)
+        ),
+    };
 }
 
 function humanizeIdentifier(value) {
