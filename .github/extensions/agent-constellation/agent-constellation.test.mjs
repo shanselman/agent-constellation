@@ -684,6 +684,12 @@ test("model labels use conservative humanization and optional reasoning effort",
     assert.equal(formatModelLabel("gpt-5.6-sol-fast", "xhigh"), "GPT-5.6 Sol Fast · Extra High");
     assert.equal(formatModelLabel("claude-sonnet-5", "medium"), "Claude Sonnet 5 · Medium");
     assert.equal(formatModelLabel("openai/gpt_5.6_sol", "low"), "OpenAI GPT-5.6 Sol · Low");
+    assert.equal(
+        formatModelLabel(
+            "455e21f6-2197-4b48-9225-859183e8fc7f/mai-code-1.1-flash-local"
+        ),
+        "Mai Code 1.1 Flash Local"
+    );
     assert.equal(formatModelLabel("auto"), "Auto");
     assert.equal(formatModelLabel("gpt-5.6-sol", "none"), "GPT-5.6 Sol");
     assert.equal(formatModelLabel("gpt-5.6-sol", ""), "GPT-5.6 Sol");

@@ -680,7 +680,14 @@ function humanizeIdentifier(value) {
 }
 
 export function formatModelLabel(model, reasoningEffort) {
-    const modelLabel = humanizeIdentifier(model);
+    const displayModel =
+        typeof model === "string"
+            ? model.replace(
+                  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}[/:]/i,
+                  ""
+              )
+            : model;
+    const modelLabel = humanizeIdentifier(displayModel);
     if (!modelLabel) return "";
     const effortKey =
         typeof reasoningEffort === "string" ? reasoningEffort.trim().toLowerCase() : "";
