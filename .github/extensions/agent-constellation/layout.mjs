@@ -679,7 +679,9 @@ function humanizeIdentifier(value) {
         .join("");
 }
 
-export function formatModelLabel(model, reasoningEffort) {
+export function formatModelLabel(model, reasoningEffort, modelDisplayName) {
+    const recordedDisplayName =
+        typeof modelDisplayName === "string" ? modelDisplayName.trim() : "";
     const displayModel =
         typeof model === "string"
             ? model.replace(
@@ -687,7 +689,7 @@ export function formatModelLabel(model, reasoningEffort) {
                   ""
               )
             : model;
-    const modelLabel = humanizeIdentifier(displayModel);
+    const modelLabel = recordedDisplayName || humanizeIdentifier(displayModel);
     if (!modelLabel) return "";
     const effortKey =
         typeof reasoningEffort === "string" ? reasoningEffort.trim().toLowerCase() : "";

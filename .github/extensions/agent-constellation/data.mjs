@@ -469,6 +469,35 @@ function latestActivities(database) {
     return activities;
 }
 
+function providerModelDisplayNames(database) {
+    const displayNames = new Map();
+    const rows = databaseRows(
+        database,
+        `SELECT provider_id, model_id, display_name
+         FROM provider_models
+         WHERE display_name IS NOT NULL AND display_name != ''
+         LIMIT 5000`
+    );
+    for (const row of rows) {
+        const providerId = sanitizeText(row.provider_id, 80);
+        const modelId = sanitizeText(row.model_id, 100);
+        const displayName = sanitizeText(row.display_name, 140);
+        if (!providerId || !modelId || !displayName) continue;
+        displayNames.set(`${providerId}::${modelId}`, displayName);
+    }
+    return displayNames;
+}
+
+function resolveModelDisplayName(displayNames, providerId, model) {
+    if (!(displayNames instanceof Map) || !displayNames.size || !providerId || !model) {
+        return "";
+    }
+    const modelId = model.startsWith(`${providerId}/`)
+        ? model.slice(providerId.length + 1)
+        : model;
+    return displayNames.get(`${providerId}::${modelId}`) || "";
+}
+
 function deriveStatus(sessionRow, eventState, activity) {
     const archived = Boolean(sessionRow.session_archived_at || sessionRow.workspace_archived_at);
     if (archived) return { status: "archived" };
@@ -531,6 +560,7 @@ function readApplicationRows(appDatabase) {
             parents: [],
             projects: [],
             repoContexts: [],
+            providerModels: new Map(),
             activities: new Map(),
             capability: "unavailable",
             availability: {
@@ -601,6 +631,11 @@ function readApplicationRows(appDatabase) {
             "activity_type",
             "updated_at",
         ]),
+        providerModels: inspectDatabaseTable(appDatabase, "provider_models", [
+            "provider_id",
+            "model_id",
+            "display_name",
+        ]),
     };
     const capability = summarizeDatabaseCapability({
         opened: true,
@@ -622,6 +657,7 @@ function readApplicationRows(appDatabase) {
             parents: [],
             projects: [],
             repoContexts: [],
+            providerModels: new Map(),
             activities: new Map(),
             capability,
             availability: {
@@ -650,6 +686,7 @@ function readApplicationRows(appDatabase) {
     const hasProjects = tables.projects === "ready";
     const hasRepoContexts = tables.repoContexts === "ready";
     const hasActivities = tables.activities === "ready";
+    const hasProviderModels = tables.providerModels === "ready";
     return {
         sessions: databaseRows(
             appDatabase,
@@ -687,6 +724,9 @@ function readApplicationRows(appDatabase) {
              FROM workspace_repo_contexts`
         ) : [],
         activities: hasActivities ? latestActivities(appDatabase) : new Map(),
+        providerModels: hasProviderModels
+            ? providerModelDisplayNames(appDatabase)
+            : new Map(),
         capability,
         availability: {
             relationships:
@@ -849,6 +889,13 @@ function buildRawNodes(rows, store, sessionStateRoot) {
         const events = readEventTail(sessionStateRoot, sessionRow.id);
         const statusDetails = deriveStatus(sessionRow, events, rows.activities.get(sessionRow.id));
         const refs = referenceDetails(workspace, repoContext, store.refs.get(sessionRow.id) ?? []);
+        const providerId = sanitizeText(sessionRow.provider_id, 80);
+        const rawModel = sanitizeText(sessionRow.model, 100);
+        const modelDisplayName = resolveModelDisplayName(
+            rows.providerModels,
+            providerId,
+            rawModel
+        );
         nodes.set(sessionRow.id, {
             id: sessionRow.id,
             parentId: parentSessionId,
@@ -865,8 +912,9 @@ function buildRawNodes(rows, store, sessionStateRoot) {
             repository: repositoryMetadata.label,
             branch: sanitizeText(appBranch || storeBranch, 180) || undefined,
             mode: sanitizeText(sessionRow.mode, 30) || undefined,
-            provider: sanitizeText(sessionRow.provider_id, 80) || undefined,
-            model: sanitizeText(sessionRow.model, 100) || undefined,
+            provider: providerId || undefined,
+            model: rawModel || undefined,
+            modelDisplayName: modelDisplayName || undefined,
             reasoningEffort: sanitizeText(sessionRow.reasoning_effort, 30) || undefined,
             createdAt: isoTimestamp(sessionRow.created_at || storeRow?.created_at),
             updatedAt: isoTimestamp(
@@ -1126,6 +1174,7 @@ export function normalizeConstellation(rawNodes, currentSessionId, metadata = {}
             mode: sanitizeText(input.mode, 30) || undefined,
             provider,
             model,
+            modelDisplayName: sanitizeText(input.modelDisplayName, 140) || undefined,
             reasoningEffort: sanitizeText(input.reasoningEffort, 30) || undefined,
             isLocalModel: isLocalModelMetadata({ provider, model }),
             isCloudModel: isCloudModelMetadata({ provider, model }),
@@ -1396,6 +1445,7 @@ export function stateFingerprint(state) {
             branch: node.branch,
             provider: node.provider,
             model: node.model,
+            modelDisplayName: node.modelDisplayName,
             reasoningEffort: node.reasoningEffort,
             isLocalModel: node.isLocalModel,
             isCloudModel: node.isCloudModel,

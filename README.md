@@ -94,7 +94,7 @@ Windows high-contrast and other forced-color modes replace decorative surfaces, 
 
 ### Model and reasoning badges
 
-When Copilot exposes model metadata, cards and the inspector display a conservative human-readable label such as `GPT-5.6 Sol Fast · High`. Missing provider or model fields are handled without hiding the session.
+When Copilot exposes model metadata, cards and the inspector display a conservative human-readable label such as `GPT-5.6 Sol Fast · High`. Missing provider or model fields are handled without hiding the session. For custom/local providers, a recorded display name from the app's `provider_models` table (e.g. a model renamed to `Aion Flash`) takes precedence over the humanized raw model identifier.
 
 ### Local-model leaf semantics
 

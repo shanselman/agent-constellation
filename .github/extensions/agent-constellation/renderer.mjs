@@ -1223,7 +1223,7 @@ export function renderConstellationHtml(config) {
     }
 
     function appendModelDetail(node) {
-      const value = formatModelLabel(node.model, node.reasoningEffort);
+      const value = formatModelLabel(node.model, node.reasoningEffort, node.modelDisplayName);
       if (!value) return;
       const dt = document.createElement("dt");
       dt.textContent = "Model";
@@ -1608,7 +1608,7 @@ export function renderConstellationHtml(config) {
       if (node.isCurrent) parts.push("current session");
       if (node.isRoot) parts.push("constellation root");
       if (node.branch) parts.push("branch " + node.branch);
-      const modelLabel = formatModelLabel(node.model, node.reasoningEffort);
+      const modelLabel = formatModelLabel(node.model, node.reasoningEffort, node.modelDisplayName);
       if (modelLabel) parts.push("model " + modelLabel);
       if (node.isLocalModel) {
         parts.push(node.demoLocalModel ? "Demo local model" : "Local model");
@@ -2005,7 +2005,7 @@ export function renderConstellationHtml(config) {
         const modelLabel =
           node.isShelf || node.isRepositoryGroup || node.isOverflowSummary
           ? ""
-          : formatModelLabel(node.model, node.reasoningEffort);
+          : formatModelLabel(node.model, node.reasoningEffort, node.modelDisplayName);
         const hasModelLabel = Boolean(modelLabel);
         const group = svgElement("g", {
           class: "node " + node.status + " status-" + node.status +

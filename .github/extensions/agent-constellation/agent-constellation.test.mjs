@@ -696,6 +696,25 @@ test("model labels use conservative humanization and optional reasoning effort",
     assert.equal(formatModelLabel("", "high"), "");
 });
 
+test("model labels prefer a recorded provider display name over humanized text", () => {
+    assert.equal(
+        formatModelLabel(
+            "455e21f6-2197-4b48-9225-859183e8fc7f/mai-code-1.1-flash-local",
+            "medium",
+            "Aion Flash"
+        ),
+        "Aion Flash · Medium"
+    );
+    assert.equal(
+        formatModelLabel("gpt-5.6-sol", "high", ""),
+        "GPT-5.6 Sol · High"
+    );
+    assert.equal(
+        formatModelLabel("gpt-5.6-sol", "high", "   "),
+        "GPT-5.6 Sol · High"
+    );
+});
+
 test("normalization sanitizes raw model state and fingerprints model changes", () => {
     const first = normalizeConstellation(
         [
@@ -732,6 +751,43 @@ test("normalization sanitizes raw model state and fingerprints model changes", (
     const localityChanged = structuredClone(first);
     localityChanged.nodes[0].isLocalModel = false;
     assert.notEqual(stateFingerprint(first), stateFingerprint(localityChanged));
+});
+
+test("normalization passes through a sanitized recorded model display name", () => {
+    const state = normalizeConstellation(
+        [
+            {
+                id: "root",
+                name: "Root",
+                repository: "octo/root",
+                provider: "455e21f6-2197-4b48-9225-859183e8fc7f",
+                model: "455e21f6-2197-4b48-9225-859183e8fc7f/mai-code-1.1-flash-local",
+                modelDisplayName: "\u0000Aion Flash ",
+                status: "idle",
+            },
+        ],
+        "root"
+    );
+    assert.equal(state.nodes[0].modelDisplayName, "Aion Flash");
+
+    const noDisplayName = normalizeConstellation(
+        [
+            {
+                id: "root",
+                name: "Root",
+                repository: "octo/root",
+                model: "claude-sonnet-5",
+                status: "idle",
+            },
+        ],
+        "root"
+    );
+    assert.equal(noDisplayName.nodes[0].modelDisplayName, undefined);
+
+    const withDisplayName = structuredClone(state);
+    const withoutDisplayName = structuredClone(state);
+    withoutDisplayName.nodes[0].modelDisplayName = undefined;
+    assert.notEqual(stateFingerprint(withDisplayName), stateFingerprint(withoutDisplayName));
 });
 
 test("local model classification requires explicit provider or runtime prefixes", () => {
@@ -950,6 +1006,56 @@ test("collector remains compatible when provider metadata is unavailable", () =>
             state.diagnostics.limitations.join(" "),
             /Project grouping metadata may be incomplete/i
         );
+    } finally {
+        app.close();
+        rmSync(scratch, { recursive: true, force: true });
+    }
+});
+
+test("collector resolves recorded display names from the provider_models table", () => {
+    const scratch = path.join(extensionDir, `.test-artifacts-${randomUUID()}`);
+    const appPath = path.join(scratch, "data.db");
+    mkdirSync(scratch, { recursive: true });
+    const app = new DatabaseSync(appPath);
+    try {
+        app.exec(`
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, mode TEXT, model TEXT, reasoning_effort TEXT,
+                provider_id TEXT, is_running INTEGER, was_interrupted INTEGER, created_at TEXT,
+                updated_at TEXT, archived_at TEXT, forked_from_session_id TEXT
+            );
+            CREATE TABLE provider_models (
+                id TEXT PRIMARY KEY, provider_id TEXT, model_id TEXT, display_name TEXT
+            );
+        `);
+        app.prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
+            "current",
+            "interactive",
+            "custom-provider/mai-code-1.1-flash-local",
+            "high",
+            "custom-provider",
+            0,
+            0,
+            "2026-09-25T16:00:00.000Z",
+            "2026-09-25T16:01:00.000Z",
+            null,
+            null
+        );
+        app.prepare("INSERT INTO provider_models VALUES (?, ?, ?, ?)").run(
+            "provider-model",
+            "custom-provider\u0000",
+            "mai-code-1.1-flash-local",
+            " Aion Flash\u0000"
+        );
+        const state = collectConstellationState({
+            currentSessionId: "current",
+            appDatabasePath: appPath,
+            sessionStorePath: path.join(scratch, "missing-session-store.db"),
+            sessionStateRoot: path.join(scratch, "session-state"),
+        });
+        const current = state.nodes.find((node) => node.id === "current");
+        assert.equal(current.modelDisplayName, "Aion Flash");
+        assert.equal(current.isLocalModel, true);
     } finally {
         app.close();
         rmSync(scratch, { recursive: true, force: true });
