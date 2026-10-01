@@ -34,6 +34,16 @@ const overviewRootId = "__agent_constellation_overview__";
 const statusPriority = new Map(STATUSES.map((status, index) => [status, index]));
 const localProviders = new Set(["ollama", "winml", "local"]);
 const localModelPrefix = /^(?:ollama|winml|local)[/:]/;
+const cloudProviders = new Set([
+    "github",
+    "openai",
+    "anthropic",
+    "azure",
+    "google",
+    "vertex",
+    "xai",
+]);
+const cloudModelPrefix = /^(?:(?:openai|anthropic|github|azure|google|vertex|xai)[/:]|gpt-|claude-|gemini-|grok-)/;
 const sourceStates = new Set([
     "healthy",
     "partial",
@@ -68,6 +78,15 @@ export function isLocalModelMetadata({ provider, model } = {}) {
     return (
         localProviders.has(normalizedProvider) ||
         localModelPrefix.test(normalizedModel)
+    );
+}
+
+export function isCloudModelMetadata({ provider, model } = {}) {
+    const normalizedProvider = sanitizeText(provider, 80).toLowerCase();
+    const normalizedModel = sanitizeText(model, 100).toLowerCase();
+    return (
+        !isLocalModelMetadata({ provider: normalizedProvider, model: normalizedModel }) &&
+        (cloudProviders.has(normalizedProvider) || cloudModelPrefix.test(normalizedModel))
     );
 }
 
@@ -1095,6 +1114,7 @@ export function normalizeConstellation(rawNodes, currentSessionId, metadata = {}
             model,
             reasoningEffort: sanitizeText(input.reasoningEffort, 30) || undefined,
             isLocalModel: isLocalModelMetadata({ provider, model }),
+            isCloudModel: isCloudModelMetadata({ provider, model }),
             task: sanitizeText(input.task, 180) || undefined,
             pullRequest: sanitizeText(input.pullRequest, 180) || undefined,
             issue: sanitizeText(input.issue, 180) || undefined,
@@ -1300,6 +1320,7 @@ export function decorateConstellationForDemo(state) {
                   model: "ollama/llama-3.3",
                   reasoningEffort: "high",
                   isLocalModel: true,
+                  isCloudModel: false,
                   demoLocalModel: true,
                   provenance: {
                       ...node.provenance,
@@ -1363,6 +1384,7 @@ export function stateFingerprint(state) {
             model: node.model,
             reasoningEffort: node.reasoningEffort,
             isLocalModel: node.isLocalModel,
+            isCloudModel: node.isCloudModel,
             demoLocalModel: node.demoLocalModel,
             status: node.status,
             busySince: node.busySince,

@@ -26,7 +26,7 @@ Agent Constellation makes those relationships visible. The current session is ma
 
 The default `tree` scope follows the topmost accessible ancestor of the current session and includes that session's descendants, preserving the original family-tree behavior. The opt-in `all` scope retains every discovered sanitized app session and recorded parent-child relationship. Independent real roots are placed under a synthetic **All sessions** overview node with dashed containment connections that are explicitly labeled as grouping—not lineage.
 
-Cards show the session name, project, repository, current status, and—when available—the selected model and reasoning effort. Real-session counts exclude the synthetic overview node. Scope diagnostics report requested/effective scope, selected and discovered real-session counts, independent real-root count, source availability, and partial relationship/project limitations.
+Cards show the session name, project, repository, current status, and—when available—the selected model and reasoning effort. Sessions using a local model have a vibrant purple card and a leaf marker; recognized cloud models have a blue card and cloud icon. A legend key appears for either kind when one is visible. Real-session counts exclude the synthetic overview node. Scope diagnostics report requested/effective scope, selected and discovered real-session counts, independent real-root count, source availability, and partial relationship/project limitations.
 
 Repositoryless sessions are labeled conservatively. A session becomes **Home chat** under **My Copilot** only when app metadata positively identifies its session type as `general_chat`; arbitrary repositoryless CLI or fallback sessions remain **Standalone session** under **No project**.
 

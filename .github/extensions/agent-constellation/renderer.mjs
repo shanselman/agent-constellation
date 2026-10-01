@@ -21,7 +21,15 @@ export function renderConstellationHtml(config) {
       --busy-muted: var(--true-color-blue-muted, color-mix(in srgb, var(--busy) 18%, transparent));
       --idle: var(--text-color-muted, #8b949e);
       --complete: var(--true-color-green, #3fb950);
-      --local-model: color-mix(in srgb, var(--complete) 86%, var(--text) 14%);
+      --local-model: #c084fc;
+      --local-leaf: var(--true-color-green, #3fb950);
+      --local-model-surface: #581c87;
+      --local-model-text: #faf5ff;
+      --local-model-muted: #e9d5ff;
+      --cloud-model: #60a5fa;
+      --cloud-model-surface: #1e3a8a;
+      --cloud-model-text: #eff6ff;
+      --cloud-model-muted: #dbeafe;
       --demo: var(--true-color-purple, #a371f7);
       --waiting: var(--true-color-yellow, #d29922);
       --plan: var(--true-color-purple, #a371f7);
@@ -36,6 +44,15 @@ export function renderConstellationHtml(config) {
       --panel-bg: color-mix(in srgb, var(--background-color-default, #fff) 95%, var(--text-color-default, #1f2328) 5%);
       --card-bg: color-mix(in srgb, var(--background-color-default, #fff) 98%, var(--text-color-default, #1f2328) 2%);
       --card-shadow: rgb(31 35 40 / .12);
+      --local-model: #7e22ce;
+      --local-leaf: var(--true-color-green, #3fb950);
+      --local-model-surface: #e9d5ff;
+      --local-model-text: #2e1065;
+      --local-model-muted: #3b1b65;
+      --cloud-model: #1d4ed8;
+      --cloud-model-surface: #bfdbfe;
+      --cloud-model-text: #172554;
+      --cloud-model-muted: #1e3a8a;
     }
     :where(html, body)[data-color-mode="dark"] {
       --card-shadow: rgb(1 4 9 / .28);
@@ -114,6 +131,42 @@ export function renderConstellationHtml(config) {
       white-space: nowrap;
     }
     .status-strip button.active { border-color: var(--status-color); color: var(--text); }
+    .local-model-key {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+    .local-model-key-swatch {
+      width: 10px;
+      height: 10px;
+      flex: none;
+      border: 1px solid var(--local-model);
+      border-radius: 3px;
+      background: var(--local-model-surface);
+    }
+    .cloud-model-key, .model-runtime-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--cloud-model);
+      font-size: 10px;
+      font-weight: var(--font-weight-semibold, 600);
+      white-space: nowrap;
+    }
+    .cloud-model-icon {
+      color: var(--cloud-model);
+      overflow: visible;
+    }
+    .cloud-model-icon path {
+      fill: none;
+      stroke: currentColor;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 1.6;
+    }
     .status-glyph {
       display: inline-block;
       width: 10px;
@@ -400,6 +453,22 @@ export function renderConstellationHtml(config) {
     }
     .node:hover .node-card, .node.selected .node-card { stroke-width: 3; }
     .node.root .node-card { stroke-width: 3; }
+    .node.local-model .node-card {
+      fill: var(--local-model-surface);
+      stroke: var(--local-model);
+    }
+    .node.local-model {
+      --text: var(--local-model-text);
+      --muted: var(--local-model-muted);
+    }
+    .node.cloud-model .node-card {
+      fill: var(--cloud-model-surface);
+      stroke: var(--cloud-model);
+    }
+    .node.cloud-model {
+      --text: var(--cloud-model-text);
+      --muted: var(--cloud-model-muted);
+    }
     .node-focus-ring {
       fill: none;
       stroke: var(--focus);
@@ -468,7 +537,7 @@ export function renderConstellationHtml(config) {
     .node-name { fill: var(--text); font-weight: var(--font-weight-semibold, 600); font-size: 12px; }
     .node-repo, .node-model, .node-status { fill: var(--muted); font-size: 10px; }
     .node-model { font-size: 9px; }
-    .local-model-leaf { color: var(--local-model); overflow: visible; }
+    .local-model-leaf { color: var(--local-leaf); overflow: visible; }
     .local-model-leaf .leaf-body { fill: currentColor; }
     .local-model-leaf .leaf-vein {
       fill: none;
@@ -692,6 +761,11 @@ export function renderConstellationHtml(config) {
         stroke: CanvasText;
         filter: none;
       }
+      .node.local-model .node-card { fill: Canvas; }
+      .node.cloud-model .node-card { fill: Canvas; }
+      .node.local-model .local-model-leaf, .node.cloud-model .cloud-model-icon {
+        color: CanvasText;
+      }
       .node.selected .node-card { stroke: Highlight; }
       .node-focus-ring { stroke: Highlight; }
       .node-status-marker .marker-fill { fill: CanvasText; }
@@ -727,7 +801,7 @@ export function renderConstellationHtml(config) {
           <option value="all">All sessions</option>
         </select>
       </label>
-      <div class="status-strip" id="legend" aria-label="Mission status counts"></div>
+      <div class="status-strip" id="legend" aria-label="Mission status counts and model legend"></div>
       <div class="toolbar" aria-label="Constellation controls">
         <button id="trustToggle" class="trust-control" type="button" aria-expanded="false" aria-controls="diagnostics" title="Open trust and diagnostics">
           <span class="trust-indicator" aria-hidden="true"></span>
@@ -939,6 +1013,25 @@ export function renderConstellationHtml(config) {
       return leaf;
     }
 
+    function cloudModelIcon(attributes = {}) {
+      const icon = svgElement("svg", {
+        class: "cloud-model-icon",
+        width: 13,
+        height: 11,
+        viewBox: "0 0 18 14",
+        role: "img",
+        "aria-label": "Runs in the cloud",
+        ...attributes
+      });
+      const title = svgElement("title");
+      title.textContent = "Runs in the cloud";
+      const cloud = svgElement("path", {
+        d: "M5.1 11.7h8.1a3.2 3.2 0 0 0 .3-6.4A4.7 4.7 0 0 0 4.6 5a3.4 3.4 0 0 0 .5 6.7Z"
+      });
+      icon.append(title, cloud);
+      return icon;
+    }
+
     function nodeStatusMarker(status, attributes = {}) {
       const marker = svgElement("g", {
         class: "node-status-marker status-" + status,
@@ -1142,6 +1235,12 @@ export function renderConstellationHtml(config) {
         localLabel.className = "local-model-label";
         localLabel.textContent = node.demoLocalModel ? "Demo local runtime" : "Local runtime";
         dd.appendChild(localLabel);
+      } else if (node.isCloudModel) {
+        dd.appendChild(cloudModelIcon());
+        const cloudLabel = document.createElement("span");
+        cloudLabel.className = "model-runtime-label";
+        cloudLabel.textContent = "Cloud model";
+        dd.appendChild(cloudLabel);
       }
       const content = document.createElement("span");
       content.textContent = value;
@@ -1513,6 +1612,8 @@ export function renderConstellationHtml(config) {
       if (modelLabel) parts.push("model " + modelLabel);
       if (node.isLocalModel) {
         parts.push(node.demoLocalModel ? "Demo local model" : "Local model");
+      } else if (node.isCloudModel) {
+        parts.push("Cloud model");
       }
       if (node.humanGate) parts.push(node.humanGate.label);
       return parts.join(", ");
@@ -1543,6 +1644,26 @@ export function renderConstellationHtml(config) {
         });
         elements.legend.appendChild(button);
       });
+      if (state.layout.nodes.some((node) => node.isLocalModel && !node.isShelf)) {
+        const localModelKey = document.createElement("span");
+        localModelKey.className = "local-model-key";
+        const swatch = document.createElement("span");
+        swatch.className = "local-model-key-swatch";
+        swatch.setAttribute("aria-hidden", "true");
+        const label = document.createElement("span");
+        label.textContent = "Local model";
+        localModelKey.append(swatch, label);
+        elements.legend.appendChild(localModelKey);
+      }
+      if (state.layout.nodes.some((node) => node.isCloudModel && !node.isShelf)) {
+        const cloudModelKey = document.createElement("span");
+        cloudModelKey.className = "cloud-model-key";
+        cloudModelKey.appendChild(cloudModelIcon());
+        const label = document.createElement("span");
+        label.textContent = "Cloud model";
+        cloudModelKey.appendChild(label);
+        elements.legend.appendChild(cloudModelKey);
+      }
     }
 
     function attentionAgeText(item) {
@@ -1891,6 +2012,10 @@ export function renderConstellationHtml(config) {
             (node.isRoot ? " root" : "") +
             (node.isCurrent ? " current" : "") +
             (state.focusSessionId === node.id ? " focus-origin" : "") +
+            (node.isLocalModel && !node.isShelf && !node.isRepositoryGroup &&
+              !node.isOverflowSummary && !node.synthetic ? " local-model" : "") +
+            (node.isCloudModel && !node.isShelf && !node.isRepositoryGroup &&
+              !node.isOverflowSummary && !node.synthetic ? " cloud-model" : "") +
             (node.isShelf ? " shelf" : "") +
             (node.isRepositoryGroup ? " repository-group" : "") +
             (node.isOverflowSummary ? " overflow-summary" : "") +
@@ -1982,19 +2107,29 @@ export function renderConstellationHtml(config) {
             : visibleModelLabel;
           const model = svgElement("text", {
             class: "node-model",
-            x: node.isLocalModel ? 6 : 0,
+            x: node.isLocalModel || node.isCloudModel ? 6 : 0,
             y: 11,
             "text-anchor": "middle"
           });
           model.textContent = displayedModelLabel;
-          if (node.isLocalModel && !node.isShelf) {
+          if (node.isCloudModel && !node.isShelf) {
             const estimatedWidth = displayedModelLabel.length * 4.7;
-            group.appendChild(localModelLeaf({
-              x: 6 - estimatedWidth / 2 - 13,
+            group.appendChild(cloudModelIcon({
+              x: 6 - estimatedWidth / 2 - 15,
               y: 3
             }));
           }
           group.appendChild(model);
+        }
+        if (node.isLocalModel && !node.isShelf && !node.isRepositoryGroup &&
+            !node.isOverflowSummary && !node.synthetic) {
+          const leafSize = 18;
+          group.appendChild(localModelLeaf({
+            width: leafSize,
+            height: leafSize,
+            x: markerLayout.activity.x - leafSize / 2,
+            y: markerLayout.activity.y - leafSize / 2
+          }));
         }
         group.appendChild(status);
         if (node.isCurrent) {

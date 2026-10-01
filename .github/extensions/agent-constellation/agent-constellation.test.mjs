@@ -19,6 +19,7 @@ import {
     decorateConstellationForDemo,
     diagnosticsLevel,
     filterConstellationState,
+    isCloudModelMetadata,
     isLocalModelMetadata,
     layoutConstellation,
     normalizeConstellation,
@@ -753,6 +754,24 @@ test("local model classification requires explicit provider or runtime prefixes"
     }
     assert.equal(isLocalModelMetadata(), false);
     assert.equal(isLocalModelMetadata({ provider: "", model: "" }), false);
+});
+
+test("cloud model classification requires explicit provider or cloud model identifiers", () => {
+    for (const provider of ["github", "openai", "anthropic", "azure", "google", "vertex", "xai"]) {
+        assert.equal(isCloudModelMetadata({ provider, model: "custom-model" }), true);
+    }
+    for (const model of [
+        "gpt-5.6-sol",
+        "claude-sonnet-5",
+        "gemini-2.5-pro",
+        "grok-4",
+        "github/gpt-6-astra",
+    ]) {
+        assert.equal(isCloudModelMetadata({ provider: "", model }), true);
+    }
+    assert.equal(isCloudModelMetadata({ provider: "ollama", model: "gpt-5.6-sol" }), false);
+    assert.equal(isCloudModelMetadata({ provider: "", model: "unknown-model" }), false);
+    assert.equal(isCloudModelMetadata(), false);
 });
 
 test("source capability helpers distinguish healthy, partial, unavailable, and incompatible", () => {
@@ -2896,6 +2915,7 @@ test("collector uses app relationships and gracefully combines safe fallbacks", 
         assert.equal(root.model, "gpt-5.6-sol");
         assert.equal(root.reasoningEffort, "high");
         assert.equal(root.isLocalModel, true);
+        assert.equal(root.isCloudModel, false);
         const child = result.nodes.find((node) => node.id === "child");
         assert.equal(child.parentId, "root");
         assert.equal(child.name, "Review child");
@@ -2904,6 +2924,7 @@ test("collector uses app relationships and gracefully combines safe fallbacks", 
         assert.equal(child.model, "auto");
         assert.equal(child.reasoningEffort, undefined);
         assert.equal(child.isLocalModel, false);
+        assert.equal(child.isCloudModel, true);
         assert.equal(child.humanGate.label, "Plan approval required");
         assert.equal(child.pullRequest, "#42");
         assert.equal(child.issue, "#7");
@@ -3531,6 +3552,35 @@ test("renderer exposes accessibility and reduced-motion affordances", () => {
     assert.match(html, /"aria-label": "Runs locally"/);
     assert.match(html, /title\.textContent = "Runs locally"/);
     assert.match(html, /parts\.push\(node\.demoLocalModel \? "Demo local model" : "Local model"\)/);
+    assert.match(
+        html,
+        /--local-model: #c084fc;\s*--local-leaf: var\(--true-color-green, #3fb950\);\s*--local-model-surface: #581c87;\s*--local-model-text: #faf5ff;\s*--local-model-muted: #e9d5ff;/
+    );
+    assert.match(html, /--local-leaf: var\(--true-color-green, #3fb950\);/);
+    assert.match(html, /--local-model: #7e22ce;\s*--local-leaf: var\(--true-color-green, #3fb950\);\s*--local-model-surface: #e9d5ff;\s*--local-model-text: #2e1065;\s*--local-model-muted: #3b1b65;/);
+    assert.match(html, /\.local-model-leaf \{ color: var\(--local-leaf\); overflow: visible; \}/);
+    assert.match(html, /--cloud-model: #60a5fa;\s*--cloud-model-surface: #1e3a8a;\s*--cloud-model-text: #eff6ff;\s*--cloud-model-muted: #dbeafe;/);
+    assert.match(html, /--cloud-model: #1d4ed8;\s*--cloud-model-surface: #bfdbfe;\s*--cloud-model-text: #172554;\s*--cloud-model-muted: #1e3a8a;/);
+    assert.match(html, /\.node\.local-model \.node-card\s*\{\s*fill: var\(--local-model-surface\);\s*stroke: var\(--local-model\);/);
+    assert.match(html, /\.node\.local-model\s*\{\s*--text: var\(--local-model-text\);\s*--muted: var\(--local-model-muted\);/);
+    assert.match(html, /\.node\.cloud-model \.node-card\s*\{\s*fill: var\(--cloud-model-surface\);\s*stroke: var\(--cloud-model\);/);
+    assert.match(html, /\.node\.cloud-model\s*\{\s*--text: var\(--cloud-model-text\);\s*--muted: var\(--cloud-model-muted\);/);
+    assert.match(
+        html,
+        /node\.isLocalModel && !node\.isShelf && !node\.isRepositoryGroup &&\s*!node\.isOverflowSummary && !node\.synthetic \? " local-model" : ""/
+    );
+    assert.match(html, /label\.textContent = "Local model"/);
+    assert.match(html, /function cloudModelIcon/);
+    assert.match(html, /"aria-label": "Runs in the cloud"/);
+    assert.match(html, /label\.textContent = "Cloud model"/);
+    assert.match(html, /node\.isCloudModel && !node\.isShelf/);
+    assert.match(html, /const leafSize = 18;\s*group\.appendChild\(localModelLeaf\(\{\s*width: leafSize,\s*height: leafSize,\s*x: markerLayout\.activity\.x - leafSize \/ 2,\s*y: markerLayout\.activity\.y - leafSize \/ 2/);
+    assert.doesNotMatch(html, /6 - estimatedWidth \/ 2 - 13/);
+    assert.match(html, /node\.isCloudModel && !node\.isShelf && !node\.isRepositoryGroup &&\s*!node\.isOverflowSummary && !node\.synthetic \? " cloud-model" : ""/);
+    assert.match(html, /else if \(node\.isCloudModel\) \{\s*parts\.push\("Cloud model"\)/);
+    assert.match(html, /if \(node\.isCloudModel && !node\.isShelf\)/);
+    assert.match(html, /\.node\.local-model \.node-card \{ fill: Canvas; \}/);
+    assert.match(html, /\.node\.cloud-model \.node-card \{ fill: Canvas; \}/);
     assert.match(html, /class: "node-model"/);
     assert.match(
         html,
