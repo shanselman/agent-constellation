@@ -34,6 +34,7 @@ const overviewRootId = "__agent_constellation_overview__";
 const statusPriority = new Map(STATUSES.map((status, index) => [status, index]));
 const localProviders = new Set(["ollama", "winml", "local"]);
 const localModelPrefix = /^(?:ollama|winml|local)[/:]/;
+const loopbackHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const cloudProviders = new Set([
     "github",
     "openai",
@@ -77,8 +78,21 @@ export function isLocalModelMetadata({ provider, model } = {}) {
     const normalizedModel = sanitizeText(model, 100).toLowerCase();
     return (
         localProviders.has(normalizedProvider) ||
-        localModelPrefix.test(normalizedModel)
+        normalizedModel.includes("local") ||
+        localModelPrefix.test(normalizedModel) ||
+        isLoopbackAddress(normalizedProvider) ||
+        isLoopbackAddress(normalizedModel)
     );
+}
+
+function isLoopbackAddress(value) {
+    if (!value) return false;
+    try {
+        const address = new URL(value.includes("://") ? value : `http://${value}`);
+        return loopbackHosts.has(address.hostname);
+    } catch {
+        return false;
+    }
 }
 
 export function isCloudModelMetadata({ provider, model } = {}) {

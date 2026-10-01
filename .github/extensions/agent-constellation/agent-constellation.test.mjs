@@ -738,8 +738,19 @@ test("local model classification requires explicit provider or runtime prefixes"
         "winml/phi-4",
         "local/custom",
         "local:custom",
+        "mai-code-1.1-flash-local",
+        "provider/LOCAL-model",
+        "http://127.0.0.1:11434/api/model",
+        "http://localhost:11434/api/model",
     ]) {
         assert.equal(isLocalModelMetadata({ provider: "github", model }), true);
+    }
+    for (const provider of [
+        "http://127.0.0.1:11434",
+        "http://localhost:11434",
+        "http://[::1]:11434",
+    ]) {
+        assert.equal(isLocalModelMetadata({ provider, model: "custom-model" }), true);
     }
     for (const model of [
         "llama-3.3",
@@ -770,6 +781,7 @@ test("cloud model classification requires explicit provider or cloud model ident
         assert.equal(isCloudModelMetadata({ provider: "", model }), true);
     }
     assert.equal(isCloudModelMetadata({ provider: "ollama", model: "gpt-5.6-sol" }), false);
+    assert.equal(isCloudModelMetadata({ provider: "github", model: "mai-code-1.1-flash-local" }), false);
     assert.equal(isCloudModelMetadata({ provider: "", model: "unknown-model" }), false);
     assert.equal(isCloudModelMetadata(), false);
 });

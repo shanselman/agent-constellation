@@ -101,7 +101,8 @@ When Copilot exposes model metadata, cards and the inspector display a conservat
 A leaf icon means the session has explicit local-runtime metadata. The classifier intentionally recognizes only:
 
 - Providers named `ollama`, `winml`, or `local`
-- Model identifiers beginning with `ollama/`, `ollama:`, `winml/`, `winml:`, `local/`, or `local:`
+- Model identifiers containing `local` (case-insensitive), or beginning with `ollama/`, `ollama:`, `winml/`, `winml:`, `local/`, or `local:`
+- Provider or model endpoint metadata whose host is `127.0.0.1`, `localhost`, or `::1`
 
 Model names such as `llama`, `phi`, `mistral`, or `qwen` are **not** assumed to be local without that explicit metadata. Explicit local-runtime sessions show both the leaf and a visible `LOCAL` card prefix; the inspector labels the runtime as **Local runtime** or **Demo local runtime**.
 
